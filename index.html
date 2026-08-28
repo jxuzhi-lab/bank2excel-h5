@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>银行对账单 PDF 转 Excel · 本地转换, 数据不出设备</title>
+<style>
+  :root { --brand: #1a73e8; --ok: #1a8a2e; --err: #d32f2f; --line: #e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f6f8fa; color: #1f2328; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  header h1 { font-size: 22px; margin: 0 0 6px; }
+  header p { margin: 0; color: #57606a; font-size: 14px; }
+  .privacy { display: inline-block; margin-top: 6px; font-size: 13px; color: var(--ok); background: #f0fff4; border: 1px solid #d3f5dc; border-radius: 6px; padding: 2px 10px; }
+
+  #wechat-tip { display: none; margin: 14px 0 0; padding: 10px 12px; background: #fff8e6; border: 1px solid #f0d896; border-radius: 8px; font-size: 14px; }
+
+  #drop { margin-top: 18px; border: 2px dashed #b6c2cf; border-radius: 12px; background: #fff; padding: 36px 16px; text-align: center; transition: border-color .15s, background .15s; }
+  #drop.over { border-color: var(--brand); background: #f0f6ff; }
+  #drop .big { font-size: 16px; }
+  #drop .muted { color: #57606a; font-size: 13px; margin-top: 4px; }
+  .btn { padding: 10px 22px; font-size: 15px; cursor: pointer; background: var(--brand); color: #fff; border: 0; border-radius: 8px; }
+  .btn:hover { filter: brightness(1.06); }
+
+  #engine-bar { display: none; margin-top: 14px; }
+  #engine-text { font-size: 13px; color: #57606a; margin-bottom: 6px; }
+  #engine-bar-track { height: 10px; background: #e8ebef; border-radius: 5px; overflow: hidden; }
+  #engine-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #4285f4, #34a853); transition: width .4s; }
+
+  #pwd-row { display: none; margin-top: 12px; font-size: 14px; }
+  #pwd-row input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; width: 220px; font-size: 14px; }
+
+  #queue-list { margin-top: 12px; font-size: 13px; color: #57606a; }
+  #queue-list .queue-item { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+
+  #results { margin-top: 10px; }
+  .result-row { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 10px; }
+  .result-row .name { font-weight: 600; word-break: break-all; }
+  .result-row .status { float: right; color: #57606a; }
+  .result-row .pct { color: var(--brand); font-weight: 600; }
+  .err-detail { margin-top: 8px; font-size: 13px; color: var(--err); white-space: pre-wrap; }
+  .result-card { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; font-size: 14px; }
+  .rc-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .rc-stats { margin-top: 6px; color: #333; font-size: 13px; }
+  .wechat-warn { margin-top: 8px; padding: 8px 10px; background: #fff8e6; border: 1px solid #f0d896; border-radius: 6px; font-size: 13px; }
+  .diag-offer { margin-top: 10px; padding: 10px 12px; background: #f8f9fb; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+  .diag-offer .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .diag-offer .btn { padding: 7px 14px; font-size: 13px; }
+  .muted { color: #57606a; }
+
+  footer { margin-top: 28px; font-size: 12px; color: #8b949e; text-align: center; }
+  footer a { color: #57606a; }
+
+  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 28px; background: #24292f; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; z-index: 99; max-width: 90vw; }
+</style>
+</head>
+<body data-state="idle">
+<div class="wrap">
+  <header>
+    <h1>银行对账单 PDF → Excel</h1>
+    <p>支持民生/建行/工行/招行/北京/华夏/北京农商/浦发/微信支付等已登记格式</p>
+    <span class="privacy">🔒 全程在本机浏览器内转换 · 数据不出设备 · 免安装</span>
+  </header>
+
+  <div id="wechat-tip">📍 你在微信内打开本页。iOS 微信无法直接下载文件 —— 建议点右上角「···」→「在浏览器打开」获得完整体验。</div>
+
+  <div id="drop">
+    <div class="big">拖拽对账单 PDF 到这里，或</div>
+    <div style="margin-top:12px"><button class="btn" id="pick">选择 PDF 文件</button></div>
+    <input type="file" id="file" accept=".pdf,application/pdf" multiple hidden>
+    <div class="muted">支持多文件队列 · 加密 PDF 可在下方输入密码</div>
+  </div>
+
+  <div id="engine-bar">
+    <div id="engine-text">正在加载转换引擎...</div>
+    <div id="engine-bar-track"><div id="engine-bar-fill"></div></div>
+  </div>
+
+  <div id="pwd-row">
+    🔑 PDF 密码(可选, 加密对账单用): <input type="password" id="pwd" placeholder="如华夏/中行网银导出密码" autocomplete="off">
+  </div>
+
+  <div id="queue-list"></div>
+  <div id="results"></div>
+
+  <footer>
+    转换在您的设备本地完成(浏览器内 WebAssembly), 服务器不接收任何数据 ·
+    未能识别的格式可导出脱敏诊断包协助适配 · <a href="privacy.html">隐私说明</a>
+  </footer>
+</div>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>

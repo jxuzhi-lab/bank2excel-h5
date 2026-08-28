@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M2 回归：浏览器内 13 样本逐格对比</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; background: #fafafa; color: #222; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin: 18px 0 8px; }
+  .card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin: 12px 0; }
+  button { padding: 10px 22px; font-size: 15px; cursor: pointer; background: #1a73e8; color: #fff; border: 0; border-radius: 6px; }
+  button:disabled { background: #999; cursor: not-allowed; }
+  #bar { height: 18px; background: #e8e8e8; border-radius: 9px; overflow: hidden; margin: 10px 0; }
+  #bar > div { height: 100%; background: linear-gradient(90deg,#4285f4,#34a853); width: 0%; transition: width .3s; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid #e5e5e5; padding: 5px 8px; text-align: left; }
+  th { background: #f5f5f5; }
+  tr.pass td:nth-child(2) { color: #1a8a2e; font-weight: 600; }
+  tr.fail td:nth-child(2) { color: #d32f2f; font-weight: 600; }
+  tr.running { background: #fffbe8; }
+  #summary { font-size: 15px; margin-top: 10px; }
+  .pass-big { color: #1a8a2e; font-weight: 700; }
+  .fail-big { color: #d32f2f; font-weight: 700; }
+  details { margin-top: 6px; font-size: 12px; color: #666; }
+</style>
+</head>
+<body>
+<h1>M2 回归测试：Pyodide 内转换 13 样本 vs 基准 fixtures 逐格对比</h1>
+
+<div class="card">
+  <button id="btn" onclick="runAll()">▶ 加载引擎并跑全量回归（13 样本）</button>
+  <span id="status" style="margin-left:12px;font-size:13px;color:#555;">引擎未加载</span>
+  <div id="bar"><div></div></div>
+  <div id="summary"></div>
+  <details><summary>技术说明</summary>
+    流程: 加载 Pyodide 0.27.2 → micropip 装 openpyxl/xlsxwriter → loadPackage 本地构建的 pymupdf wheel → 注入引擎+shim →
+    逐样本 fetch PDF → shim.convert_bytes → openpyxl 读回内存工作表 → 与 fixtures JSON 逐格 norm 比对。
+    对比语义与本地 m1_check.py 完全一致 (datetime→文本规范化)。
+  </details>
+</div>
+
+<div class="card">
+  <table id="tbl">
+    <thead><tr><th style="width:52%">样本</th><th>结果</th><th>行数</th><th>差异格</th><th>耗时</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+function setStatus(t) { $('#status').textContent = t; }
+
+// ---- norm: 与 make_fixtures.py / m1_check.py 一致 ----
+function pyValueToNorm(v) {
+  // openpyxl(pyodide) 返回 JS 值: date/datetime → JS Date(近似), 数字 → number, 其余 string
+  if (v === null || v === undefined) return "";
+  if (v instanceof Date) {
+    const p = (n) => String(n).padStart(2, "0");
+    const date = `${v.getFullYear()}${p(v.getMonth()+1)}${p(v.getDate())}`;
+    const hms = `${p(v.getHours())}${p(v.getMinutes())}${p(v.getSeconds())}`;
+    const hasTime = !(v.getHours()===0 && v.getMinutes()===0 && v.getSeconds()===0);
+    // openpyxl date(无时间) vs datetime: 引擎日期列两种都可能
+    // fixture 里 datetime → "YYYYMMDD HH:MM:SS", date → "YYYYMMDD"
+    // 无法从 JS Date 区分二者, 统一尝试两种: 由对比函数做双匹配
+    return hasTime ? `${date} ${hms}` : date;
+  }
+  if (typeof v === "number") return String(v);
+  return String(v).trim();
+}
+function eqFix(v, fix) {
+  const a = pyValueToNorm(v);
+  if (a === fix) return true;
+  // datetime/date 歧义补匹配: JS Date(0点) 可能对应 fixture 的 date 或 datetime(0点)
+  if (v instanceof Date) {
+    const p = (n) => String(n).padStart(2, "0");
+    const date = `${v.getFullYear()}${p(v.getMonth()+1)}${p(v.getDate())}`;
+    if (!fix.includes(" ") && fix === date) return true;
+    if (fix.startsWith(date + " ") || (fix + " 00:00:00").startsWith(date)) {
+      return fix.replace(date, "").trim() === "00:00:00" || fix === date || fix.startsWith(date);
+    }
+  }
+  // 数字歧义: "1130" vs "1130.0"
+  try { if (Math.abs(parseFloat(a) - parseFloat(fix)) < 1e-9) return true; } catch (e) {}
+  return false;
+}
+
+let py = null;
+async function initEngine() {
+  setStatus("① 加载 Pyodide 脚本...");
+  await new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js';
+    sc.onload = res; sc.onerror = () => rej(new Error('jsdelivr 失败'));
+    document.head.appendChild(sc);
+  });
+  setStatus("② 初始化 Pyodide...");
+  py = await loadPyodide();
+  setStatus("③ micropip 安装 openpyxl / xlsxwriter...");
+  await py.loadPackage('micropip');
+  await py.runPythonAsync(`import micropip; await micropip.install("openpyxl"); await micropip.install("xlsxwriter")`);
+  setStatus("④ loadPackage 加载 PyMuPDF wheel (17MB)...");
+  await py.loadPackage('../wheels/pymupdf-1.26.7-cp312-abi3-pyodide_2024_0_wasm32.whl');
+  setStatus("⑤ 注入引擎 + shim 代码...");
+  async function fetchPySource(url, label) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${label} HTTP ${r.status} (${url})`);
+    const t = await r.text();
+    if (t.trimStart().startsWith('<')) {
+      throw new Error(`${label} 返回了 HTML 而非 Python 源码——路径 404 (${url})`);
+    }
+    return t;
+  }
+  const [engSrc, shimSrc] = await Promise.all([
+    fetchPySource('../python/extract_bank_statement.py', '引擎源码'),
+    fetchPySource('../python/shim.py', 'shim'),
+  ]);
+  // 关键: 不能用 runPython 直接 eval 引擎源码——Pyodide 以 __name__=="__main__"
+  // 执行, 会触发 CLI main() → argparse 报错 SystemExit: 2。
+  // 正确做法: 写入虚拟 FS 后以模块 import(import 不触发 __main__ 守卫)。
+  py.runPython(`import os; os.environ["PYODIDE"] = "1"; os.makedirs("/lib/engine", exist_ok=True)`);
+  py.FS.writeFile('/lib/engine/extract_bank_statement.py', engSrc);
+  py.FS.writeFile('/lib/engine/shim.py', shimSrc);
+  py.runPython(`import sys; sys.path.insert(0, "/lib/engine"); import shim; shim  # noqa`);
+  // 冒烟: 确认模块与入口函数就位
+  py.runPython(`assert hasattr(shim, "convert_bytes"), "shim.convert_bytes 缺失"`);
+  setStatus("引擎就绪");
+}
+
+async function runAll() {
+  $('#btn').disabled = true;
+  const tbody = $('#tbl tbody');
+  tbody.innerHTML = '';
+  try {
+    await initEngine();
+  } catch (e) {
+    setStatus('❌ 引擎初始化失败: ' + e.message);
+    $('#btn').disabled = false; return;
+  }
+
+  const manifest = await fetch('./fixtures/manifest.json').then(r => r.json());
+  let pass = 0, done = 0;
+  const t0 = performance.now();
+
+  for (const item of manifest) {
+    const tr = document.createElement('tr');
+    tr.className = 'running';
+    tr.innerHTML = `<td>${item.name}</td><td>转换中...</td><td></td><td></td><td></td>`;
+    tbody.appendChild(tr);
+    const t1 = performance.now();
+    try {
+      // fetch PDF + fixture (页面在 /tests/ 下, 相对路径直接可用)
+      const pdfUrl = encodeURIComponent(item.pdf).replace(/%2F/g, '/');
+      const fixUrl = item.fixture.replace(/^tests\//, '');
+      const [pdfResp, fixResp] = await Promise.all([fetch(pdfUrl), fetch(fixUrl)]);
+      if (!pdfResp.ok) throw new Error('PDF HTTP ' + pdfResp.status + ' (' + pdfUrl + ')');
+      if (!fixResp.ok) throw new Error('fixture HTTP ' + fixResp.status + ' (' + fixUrl + ')');
+      const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer());
+      const fixture = await fixResp.json();
+
+      // pyodide 内转换: 写 FS → shim.convert_bytes → 读回 xlsx bytes
+      py.FS.writeFile('input.pdf', pdfBytes);
+      const js = py.runPython(`
+import json, shim
+r = shim.convert_bytes(open("input.pdf","rb").read(), sheet="t")
+open("out.xlsx","wb").write(r["xlsx"])
+json.dumps({"rows": r["rows"], "pages": r.get("pages")})
+`);
+      const meta = JSON.parse(js);
+
+      // 读回 xlsx → 逐格对比(值序列化带类型标记, 避免跨语言 Date 歧义)
+      py.runPython(`
+import openpyxl, json
+from datetime import date, datetime
+wb = openpyxl.load_workbook("out.xlsx")
+ws = wb.active
+def ser(v):
+    if isinstance(v, datetime):
+        return ["dt", v.strftime("%Y%m%d %H:%M:%S")]
+    if isinstance(v, date):
+        return ["d", v.strftime("%Y%m%d")]
+    if v is None:
+        return ["", ""]
+    try:
+        return ["n", str(float(v))]
+    except Exception:
+        return ["s", str(v).strip()]
+cells = [[ser(c.value) for c in row] for row in ws.iter_rows()]
+open("cells.json","w",encoding="utf-8").write(json.dumps(cells, ensure_ascii=False))
+`);
+      const cellsJson = py.FS.readFile('cells.json', { encoding: 'utf8' });
+      const cells = JSON.parse(cellsJson);
+
+      let diff = 0, first = null;
+      const R = Math.max(cells.length, fixture.cells.length);
+      for (let r = 0; r < R; r++) {
+        const rowA = cells[r] || [];
+        const rowB = fixture.cells[r] || [];
+        const C = Math.max(rowA.length, rowB.length);
+        for (let c = 0; c < C; c++) {
+          const cell = rowA[c] || ["", ""];
+          const b = rowB[c] ?? "";
+          // 类型感知对比: dt/d/n/s → 与 fixture 文本直接比; float 等值兜底
+          const a = cell[1];
+          let ok = a === b;
+          if (!ok) {
+            try { if (Math.abs(parseFloat(a) - parseFloat(b)) < 1e-9) ok = true; } catch (e) {}
+            // datetime(0点) vs date 同日
+            if (!ok && cell[0] === "dt" && a.endsWith(" 00:00:00") && b === a.slice(0, 8)) ok = true;
+          }
+          if (!ok) {
+            diff++;
+            if (!first) first = `(${r+1},${c+1}) [${cell[0]}] got=${JSON.stringify(a).slice(0,40)} want=${JSON.stringify(b).slice(0,40)}`;
+          }
+        }
+      }
+      const ms = Math.round(performance.now() - t1);
+      const ok = diff === 0;
+      if (ok) pass++;
+      tr.className = ok ? 'pass' : 'fail';
+      tr.innerHTML = `<td>${item.name}</td>` +
+        `<td>${ok ? '✅ PASS' : '❌ DIFF'}</td>` +
+        `<td>${meta.rows ?? '?'}</td><td>${diff}${first ? '' : ''}</td>` +
+        `<td>${ms}ms</td>` +
+        (first ? `<td colspan="5" style="color:#c00;font-size:11px">${first}</td>` : '');
+      if (first) {
+        const td = document.createElement('td');
+        td.colSpan = 5; td.style.cssText = 'color:#c00;font-size:11px';
+        td.textContent = first;
+        tr.appendChild(td);
+      }
+    } catch (e) {
+      tr.className = 'fail';
+      tr.innerHTML = `<td>${item.name}</td><td>❌ ERROR</td><td></td><td></td>` +
+        `<td colspan="1" style="color:#c00;font-size:11px">${e.message}</td>`;
+    }
+    done++;
+    $('#bar > div').style.width = Math.round(done / manifest.length * 100) + '%';
+  }
+  const totalS = Math.round((performance.now() - t0) / 100) / 10;
+  const allPass = pass === manifest.length;
+  $('#summary').innerHTML = allPass
+    ? `<span class="pass-big">🏆 M2 验收达标: ${pass}/${manifest.length} 全绿</span> <span style="color:#666">(总耗时 ${totalS}s)</span>`
+    : `<span class="fail-big">❌ ${pass}/${manifest.length} 通过</span> — 有失败项, 详情见表格`;
+  setStatus(allPass ? '✅ 全部通过' : '❌ 存在失败');
+  $('#btn').disabled = false;
+  $('#btn').textContent = '↻ 重新跑全量';
+}
+</script>
+</body>
+</html>

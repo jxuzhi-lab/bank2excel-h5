@@ -1,0 +1,42 @@
+# 备胎方案：GitHub Actions 云构建 PyMuPDF Pyodide wheel
+# 用途：本地 Docker Desktop 不可用时，推送本文件到任一 GitHub 仓库即可云端构建
+# 产物：Actions 页面 artifact 下载 pymupdf pyodide wheel → 放入 bank2excel-h5/wheels/
+# 版本锁定：pyodide-build==0.27.x 必须与前端 loadPyodide() 运行时版本匹配（ABI 铁律）
+
+name: Build PyMuPDF Pyodide wheel
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PyMuPDF source
+        run: |
+          git clone --depth 1 https://github.com/pymupdf/PyMuPDF.git pymupdf
+          cd pymupdf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pyodide-build (version locked to Pyodide 0.27.x runtime)
+        run: pip install pyodide-build==0.27.7
+
+      - name: Build Pyodide wheel (official gh_release.py path)
+        working-directory: pymupdf
+        env:
+          inputs_sdist: 0
+          inputs_PYMUPDF_SETUP_MUPDF_BUILD: "git:--recursive --depth 1 --shallow-submodules --branch master https://github.com/ArtifexSoftware/mupdf.git"
+          inputs_wheels_default: 0
+          inputs_wheels_linux_pyodide: 1
+        run: python scripts/gh_release.py build
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pymupdf-pyodide-wheel
+          path: pymupdf/dist/*pyodide*wasm32.whl
+          if-no-files-found: error

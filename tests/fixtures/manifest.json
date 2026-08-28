@@ -1,0 +1,80 @@
+[
+ {
+  "name": "22建行流水.pdf",
+  "pdf": "pdf/22建行流水.pdf",
+  "fixture": "fixtures/sample_01.json",
+  "rows": 1131
+ },
+ {
+  "name": "8264账户24年12月27日到25年12月12日带对手信息交易明细_258-300(1).pdf",
+  "pdf": "pdf/8264账户24年12月27日到25年12月12日带对手信息交易明细_258-300(1).pdf",
+  "fixture": "fixtures/sample_02.json",
+  "rows": 778
+ },
+ {
+  "name": "_ebank_spdb_upload_ebill_dtl_ae5245da63654c6387d12ab5aa680d1b.pdf",
+  "pdf": "pdf/_ebank_spdb_upload_ebill_dtl_ae5245da63654c6387d12ab5aa680d1b.pdf",
+  "fixture": "fixtures/sample_03.json",
+  "rows": 1566
+ },
+ {
+  "name": "st-账户历史明细-2026032001108542035781-11998511968-11-060601040011712.pdf",
+  "pdf": "pdf/st-账户历史明细-2026032001108542035781-11998511968-11-060601040011712.pdf",
+  "fixture": "fixtures/sample_04.json",
+  "rows": 457
+ },
+ {
+  "name": "北京银行个人客户交易流水清单AOFC001005917050321(1).pdf",
+  "pdf": "pdf/北京银行个人客户交易流水清单AOFC001005917050321(1).pdf",
+  "fixture": "fixtures/sample_05.json",
+  "rows": 59
+ },
+ {
+  "name": "华夏银行个人账户交易流水(2).pdf",
+  "pdf": "pdf/华夏银行个人账户交易流水(2).pdf",
+  "fixture": "fixtures/sample_06.json",
+  "rows": 812
+ },
+ {
+  "name": "工商银行历史明细（申请单号_26042912095053221649）.pdf",
+  "pdf": "pdf/工商银行历史明细（申请单号_26042912095053221649）.pdf",
+  "fixture": "fixtures/sample_07.json",
+  "rows": 542
+ },
+ {
+  "name": "工商银行历史明细（申请单号：25080616132840396832）(1).pdf",
+  "pdf": "pdf/工商银行历史明细（申请单号：25080616132840396832）(1).pdf",
+  "fixture": "fixtures/sample_08.json",
+  "rows": 2249
+ },
+ {
+  "name": "建行-1-7月明细.pdf",
+  "pdf": "pdf/建行-1-7月明细.pdf",
+  "fixture": "fixtures/sample_09.json",
+  "rows": 580
+ },
+ {
+  "name": "微信支付交易明细证明(20250101-20251231)_20260130133331.pdf",
+  "pdf": "pdf/微信支付交易明细证明(20250101-20251231)_20260130133331.pdf",
+  "fixture": "fixtures/sample_10.json",
+  "rows": 5064
+ },
+ {
+  "name": "微信支付交易明细证明(20260101-20260131)_20260203134103-3.pdf",
+  "pdf": "pdf/微信支付交易明细证明(20260101-20260131)_20260203134103-3.pdf",
+  "fixture": "fixtures/sample_11.json",
+  "rows": 380
+ },
+ {
+  "name": "招商银行交易流水(申请时间2025年09月19日15时40分27秒).pdf",
+  "pdf": "pdf/招商银行交易流水(申请时间2025年09月19日15时40分27秒).pdf",
+  "fixture": "fixtures/sample_12.json",
+  "rows": 650
+ },
+ {
+  "name": "民生银行明细25年全年.pdf",
+  "pdf": "pdf/民生银行明细25年全年.pdf",
+  "fixture": "fixtures/sample_13.json",
+  "rows": 402
+ }
+]
