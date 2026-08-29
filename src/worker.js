@@ -16,12 +16,11 @@ let initPromise = null;
 const PYODIDE_VER = "0.27.2";
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VER}/full/pyodide.js`;
 // 资源列表(主+备): 优先 jsdelivr 中国节点, 失败回退同源 GitHub Pages
-// 资源顺序 = [jsdelivr_gh_mirror, github_pages_same_origin]
-// jsdelivr 的 gh 镜像对中国大陆移动网络通常比 GitHub Pages 快
+// 注意: worker 脚本位于 /src/ 下, 同源相对路径必须用 ../ 回到根
 function makeUrlPairs(relPath) {
   return [
     `https://cdn.jsdelivr.net/gh/jxuzhi-lab/bank2excel-h5@main/${relPath}`,
-    new URL(relPath, self.location.href).toString(),
+    new URL(`../${relPath}`, self.location.href).toString(),
   ];
 }
 const WHEEL_PAIRS = makeUrlPairs("wheels/pymupdf-1.26.7-cp312-abi3-pyodide_2024_0_wasm32.whl");
@@ -81,9 +80,9 @@ async function init() {
         `import micropip; await micropip.install("xlsxwriter")`);
 
       // 2) PyMuPDF WASM wheel(共享库)——用 micropip.install 单 URL 重试,
-      //    比 loadPackage(URL列表)更稳。带 30s/URL 硬超时, 移动网卡住就跳下一个。
-      //    ⚠️ Pyodide 0.27.x 内置的 micropip 版本不一定支持 keep_going/pre kwargs,
-      //    用最简签名兼容最广。
+      //    比 loadPackage(URL列表)更稳。带 60s/URL 硬超时, 移动网卡住就跳下一个。
+      //    ⚠️ 只用最简签名: Pyodide 0.27.x 的 micropip 没有 add_wheel_log_handler /
+      //    keep_going 等 API(实测 AttributeError), 任何多余参数都会炸。
       reportStage("wheel-17mb", 70);
       let wheelInstalled = false;
       for (let i = 0; i < WHEEL_PAIRS.length; i++) {
@@ -94,9 +93,7 @@ async function init() {
           await Promise.race([
             py.runPythonAsync(`
 import asyncio
-import sys
 import micropip
-micropip.add_wheel_log_handler(lambda *a, **k: None)  # 抑制默认 stdout 日志
 try:
     await asyncio.wait_for(
         micropip.install(${JSON.stringify(url)}),
