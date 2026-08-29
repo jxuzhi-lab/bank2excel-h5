@@ -82,6 +82,8 @@ async function init() {
 
       // 2) PyMuPDF WASM wheel(共享库)——用 micropip.install 单 URL 重试,
       //    比 loadPackage(URL列表)更稳。带 30s/URL 硬超时, 移动网卡住就跳下一个。
+      //    ⚠️ Pyodide 0.27.x 内置的 micropip 版本不一定支持 keep_going/pre kwargs,
+      //    用最简签名兼容最广。
       reportStage("wheel-17mb", 70);
       let wheelInstalled = false;
       for (let i = 0; i < WHEEL_PAIRS.length; i++) {
@@ -97,7 +99,7 @@ import micropip
 micropip.add_wheel_log_handler(lambda *a, **k: None)  # 抑制默认 stdout 日志
 try:
     await asyncio.wait_for(
-        micropip.install(${JSON.stringify(url)}, keep_going=False, deps=False, pre=False),
+        micropip.install(${JSON.stringify(url)}),
         timeout=60,
     )
 except asyncio.TimeoutError:

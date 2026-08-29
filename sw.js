@@ -4,7 +4,7 @@
 //   stale-while-reval. : index/src/python 源码 —— 更新时能拿到新版, 离线可用
 // 版本号: 更新部署时 bump CACHE 名, 自动清旧缓存
 
-const CACHE = "bank2excel-h5-v1";
+const CACHE = "bank2excel-h5-v2";  // bump: v1→v2 (fix wheel install kwarg)
 
 const CACHE_FIRST = [
   /^https:\/\/cdn\.jsdelivr\.net\/pyodide\//,           // Pyodide 运行时(固定 0.27.2)
