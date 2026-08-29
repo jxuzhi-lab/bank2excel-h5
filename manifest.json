@@ -1,0 +1,27 @@
+{
+  "name": "银行对账单 PDF 转 Excel",
+  "short_name": "对账单转换",
+  "description": "银行对账单 / 微信支付流水 PDF → Excel, 纯前端本地转换, 数据不出设备。支持民生/建行/工行/招行/北京/华夏/北京农商/浦发/微信支付等格式。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f8fa",
+  "theme_color": "#1a73e8",
+  "lang": "zh-CN",
+  "categories": ["finance", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

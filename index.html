@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="./manifest.json">
 <title>银行对账单 PDF 转 Excel · 本地转换, 数据不出设备</title>
 <style>
   :root { --brand: #1a73e8; --ok: #1a8a2e; --err: #d32f2f; --line: #e5e7eb; }
@@ -89,5 +90,15 @@
   </footer>
 </div>
 <script type="module" src="./src/app.js"></script>
+<script>
+// PWA / 离线缓存: 首次成功后 wheel+Pyodide 进缓存, 二次秒开
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => {
+      console.warn("SW 注册失败(不影响使用):", err);
+    });
+  });
+}
+</script>
 </body>
 </html>
