@@ -4,7 +4,7 @@
 //   stale-while-reval. : index/src/python 源码 —— 更新时能拿到新版, 离线可用
 // 版本号: 更新部署时 bump CACHE 名, 自动清旧缓存
 
-const CACHE = "bank2excel-h5-v2";  // bump: v1→v2 (fix wheel install kwarg)
+const CACHE = "bank2excel-h5-v3";  // bump: v2→v3 (forbid src/ caching to fix Pages deploy lag)
 
 const CACHE_FIRST = [
   /^https:\/\/cdn\.jsdelivr\.net\/pyodide\//,           // Pyodide 运行时(固定 0.27.2)
@@ -12,9 +12,13 @@ const CACHE_FIRST = [
   /^https:\/\/cdn\.jsdelivr\.net\/gh\/jxuzhi-lab\/bank2excel-h5@main\/wheels\//,
 ];
 
+const NETWORK_FIRST = [
+  /\/src\/worker\.js/,   // worker.js 必须拿最新(否则 micropip kwargs 等代码 bug 不会修)
+];
+
 const SWR = [
-  /\/src\//,          // 应用 JS 模块
-  /\/python\//,       // 引擎源码(更新时取新版, 离线用缓存)
+  /\/src\//,          // 应用 JS 模块(index/app/bridge 等)
+  /\/python\//,       // 引擎源码
   /\/index\.html$/,
   /\/privacy\.html$/,
   /\/manifest\.json$/,
@@ -59,12 +63,32 @@ async function staleWhileRevalidate(req) {
   return network || fetch(req);
 }
 
+async function networkFirst(req) {
+  // 必须拿最新: 拿不到时回退到缓存(用于离线场景); 都不行就交给浏览器
+  try {
+    const resp = await fetch(req);
+    if (resp && resp.status === 200) {
+      const clone = resp.clone();
+      caches.open(CACHE).then((c) => c.put(req, clone));
+    }
+    return resp;
+  } catch (e) {
+    const cached = await caches.match(req);
+    if (cached) return cached;
+    throw e;
+  }
+}
+
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
   if (url.origin === self.location.origin && url.pathname === "/") return; // 根路径直通
   if (CACHE_FIRST.some((p) => p.test(url.href))) {
     e.respondWith(cacheFirst(e.request));
+    return;
+  }
+  if (NETWORK_FIRST.some((p) => p.test(url.pathname))) {
+    e.respondWith(networkFirst(e.request));
     return;
   }
   if (SWR.some((p) => p.test(url.pathname))) {
