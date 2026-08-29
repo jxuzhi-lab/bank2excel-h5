@@ -183,6 +183,13 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 - Docker workers 2→1：OCR 模型每 worker 独立加载 ~500MB, 2G 小鸡扛不住双份；单 worker + MAX_CONCURRENT=2 线程并发够用
 - SSH 断连后 `setsid docker compose up -d --build &` 会留孤儿进程, 多个 up 并发报"容器名已被占用"互相打架 → 先 `pkill -9 -f 'docker compose'` 清场再触发
 
+**水印复杂样本 OCR 压测结论（2026-08-29, 工商22页/244水印词 + 民生20页/回归基准）**：管道全程不崩, 但质量显著退化, 四个坑：
+1. **水印文字泄漏进表头带**（最致命, 民生实锤）：文字层版的水印靠引擎"跨页同位置固定元素"清除, 要求 text+x+y 精确匹配；OCR 坐标逐页抖动 → 判定失效, 页首行"中国民生银行…香山支行"被当成表头一部分 → 表头多出一列, 列错位级联全部行（借方合计虚增 714 万）。
+2. **合并表头词被 OCR 拆散**（民生"交易时间|摘要"拆成两列, 11 列 vs 基准 10 列；凭证号码时而并入摘要时而独立 → 行间列跳变）。
+3. **丢行**（民生 -12、工商 -16）：同日多条记录的日期词 OCR 失败或被并 → 整条记录被吸入上一行。
+4. 反直觉：工商对角印章/防伪码**零泄漏**（RapidOCR 读不了斜排文字反而因祸得福）, 其损害主要来自表头列结构错位（10 列 vs 11 列, 余额列 0/525）。水印密度不决定成败（北京银行 111 词/3 页曾 100% 通过）, **水印/页眉是否落在表头带附近才是关键**。
+→ 改进方向（未做）：ocr_layer 内做跨页水印行抑制（相似文本+近似位置的行不写入夹心层）；表头列数与启发式不一致时用 VLM 复核；把"笔数校验"结果暴露给用户提示丢行风险。
+
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
