@@ -1,0 +1,14 @@
+# 一键部署 compose(生产用)
+# 用法: docker compose up -d --build
+services:
+  bank2excel:
+    build: .
+    image: bank2excel-server:latest
+    container_name: bank2excel
+    restart: unless-stopped
+    ports:
+      - "80:8000"          # 直接 http://VPS_IP 访问(无需备案, IP 访问免备案)
+    environment:
+      - TZ=Asia/Shanghai
+    mem_limit: 1g          # 防止极端大文件吃满内存
+    # 可选: 上传上限调大(默认 uvicorn 无 body 限制, 引擎侧已限 200MB)
