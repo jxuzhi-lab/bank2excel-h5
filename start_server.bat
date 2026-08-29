@@ -6,7 +6,7 @@ echo ============================================
 echo  银行对账单 PDF - Excel  私有转换服务
 echo ============================================
 echo.
-set VENV=C:\Users\Administrator\.workbuddy\binaries\python\envs\default
+set VENV=C:\Users\Administrator\Documents\银行对账单转化pdf\.venv
 cd /d %~dp0
 "%VENV%\Scripts\python.exe" server.py --host 0.0.0.0 --port 8766
 pause

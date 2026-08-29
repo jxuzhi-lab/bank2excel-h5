@@ -5,6 +5,19 @@
 
 ---
 
+## ⚠️ 新环境速览（2026-08-29 迁移至本机维护，先读这段）
+
+- **Python**：系统 `python` 只有 3.7.8（过旧，缺 pymupdf≥1.24，跑不了引擎，勿直接用）。
+  维护统一用项目 venv：`C:\Users\Administrator\Documents\银行对账单转化pdf\.venv`
+  （Python 3.12.10，依赖与 requirements-server.txt 锁定版完全一致；m1_check 13/13 已验证）。
+- **git 仓库镜像**：已从 `/tmp/repo_work` 迁至 **`repo_work/`（项目根目录下）**——/tmp 会被系统清理，仓库放那里随时可能丢。
+  注意：推送凭据（GitHub PAT）明文存在 `repo_work/.git/config` 的 remote URL 里，勿截图/外泄该文件。
+- **旧环境残留**：`C:\Users\Administrator\.workbuddy\binaries\python\envs\default`（Python 3.13.14，依赖非锁定版本），历史服务进程曾用它，维护时**勿依赖**。
+- 本机 8766 服务已改由 `start_server.bat` → 项目 .venv 接管（2026-08-29 已重启验证）。
+  server.py 内嵌 HTML 的 SyntaxWarning（JS 正则 `\.`）已用 r""" 前缀修复。
+
+---
+
 ## 一、项目一句话
 
 银行对账单/微信支付流水 **PDF → Excel** 转换工具。同一套 Python 引擎（`extract_bank_statement.py`），两条线上通道：
@@ -66,7 +79,7 @@ cp scripts/extract_bank_statement.py bank2excel-h5/python/extract_bank_statement
 #    - 页级进度钩子 PROGRESS_CB(pno+1, page_count)
 # 3. 回归验证(必须全绿):
 cd bank2excel-h5/python && python m1_check.py   # 期望 13/13 PASS
-# 4. 推送: git add + commit + push(仓库在 /tmp/repo_work 或直接操作)
+# 4. 推送: git add + commit + push(仓库在 项目根/repo_work)
 ```
 
 ---
@@ -75,7 +88,7 @@ cd bank2excel-h5/python && python m1_check.py   # 期望 13/13 PASS
 
 ### 通道 A（GitHub Pages）
 ```bash
-cd /tmp/repo_work   # 本地仓库镜像
+cd "C:/Users/Administrator/Documents/银行对账单转化pdf/repo_work"   # 本地仓库镜像(勿放回 /tmp)
 cp <修改文件> .     # 覆盖改动
 git add -A && git commit -m "..." && git push origin main
 # Pages 自动构建, 约 1-3 分钟生效; 验证: curl https://jxuzhi-lab.github.io/bank2excel-h5/
@@ -132,17 +145,15 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 2. **VPS 安全**：用户改 SSH 密码（已提醒）；可选加 token 鉴权（server.py 加装饰器）
 3. **域名 + HTTPS**（可选）：IP 访问无法申请免费证书；需域名+ICP 备案，或用 Cloudflare Tunnel
 4. **README 完善**：仓库 README.md 可补双通道说明
-5. **VPS Dockerfile 已改**（去 fonts-noto-cjk + 清华 pip 源）→ **已推 GitHub？未推**：改动在本地和 VPS，需 `git push` 同步仓库（commit 未建）
-
-> ⚠️ 第 5 条请优先处理：本地 Dockerfile 已改但仓库还没同步，下次 VPS 重建会回退到旧版。
+5. ~~VPS Dockerfile 已改未推 GitHub~~ → **已解决（2026-08-29 验证）**：commit `b0e3f8c`（Dockerfile 改造 + 本手册）已推送，本地 main 与 origin/main 一致。
 
 ---
 
 ## 八、快速参考
 
 ```bash
-# 本地回归
-cd bank2excel-h5/python && python m1_check.py
+# 本地回归(用项目 venv, 系统 python 3.7 跑不了)
+cd bank2excel-h5/python && "C:/Users/Administrator/Documents/银行对账单转化pdf/.venv/Scripts/python.exe" m1_check.py
 
 # 本机服务
 cd bank2excel-h5 && start_server.bat   # 或 python server.py --port 8766
