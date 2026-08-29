@@ -102,7 +102,7 @@ ssh ubuntu@124.223.110.222
 cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 # 方式二(仅数据/配置): 容器内已 COPY 的代码改了要重建, 日志看 docker logs -f bank2excel
 ```
-> VPS 上代码更新：因 GitHub 主站被墙，用 codeload 下 zip 覆盖 `/opt/bank2excel-h5`（见 deploy_vps.py 逻辑），或用 SFTP 传文件到家目录后 sudo cp。
+> VPS 上代码更新：**推荐 SFTP 少量文件**（`update_vps.py` 仅本地存在, 含 codeload 流程; 实测 codeload 从 VPS 下载被限速 ~32KB/s, 整包 zip 极慢, 变更文件少时直接 SFTP 覆盖 + `docker compose up -d --build` 最快）。用 `update_vps.py`（依赖 deploy_vps.py 的凭据, 两者都不入仓库）或手动 SFTP 后 sudo cp。
 
 ---
 
@@ -132,8 +132,8 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 | 项 | 状态 |
 |----|------|
 | GitHub Pages 站点 | ✅ 在线（engine/worker/wheel 均 200） |
-| VPS 服务 | ✅ 在线（124.223.110.222:80，Docker 自动重启） |
-| 本机 8766 服务 | ✅ 运行中（start_server.bat 可重启） |
+| VPS 服务 | ✅ 在线（124.223.110.222:80，**T1 完整引擎版 2026-08-29 部署**，vision 未配 key 时为 none） |
+| 本机 8766 服务 | ✅ 运行中（start_server.bat / .venv，T1 完整引擎版） |
 | 引擎回归 | ✅ 13/13（m1_check.py） |
 | 合成样本回归 | ✅ 3/3 |
 
