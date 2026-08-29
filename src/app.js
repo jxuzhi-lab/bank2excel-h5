@@ -25,26 +25,34 @@ async function ensureEngine() {
   if (state.engineReady) return;
   setState("loading-engine");
   els.engineBar.style.display = "block";
-  els.engineText.textContent = "正在加载转换引擎(首次约 20-40 秒, 之后秒开)...";
+  els.engineBarFill.style.width = "0%";
   state.engine = state.engine || createEngine();
-  // 引擎加载是黑盒, 用假进度动画安抚(真实页级进度在转换阶段)
-  let pct = 0;
-  const timer = setInterval(() => {
-    pct = Math.min(pct + 3, 92);
-    els.engineBarFill.style.width = pct + "%";
-  }, 600);
+  // 真实阶段上报: 每步 worker postMessage 上来, 立即更新 UI
+  const STAGE_LABEL = {
+    "pyodide-cdn":   "① 加载 Pyodide 运行时(CDN)...",
+    "pyodide-init":  "② 初始化 Pyodide...",
+    "micropip":      "③ 加载 micropip...",
+    "openpyxl":      "④ 安装 openpyxl(PyPI)...",
+    "xlsxwriter":    "⑤ 安装 xlsxwriter(PyPI)...",
+    "wheel-17mb":    "⑥ 加载 PyMuPDF 引擎(17MB, 较慢)...",
+    "engine-fetch":  "⑦ 拉取转换引擎源码...",
+    "engine-import": "⑧ 注入引擎到 Pyodide...",
+    "ready":         "引擎就绪 ✓",
+  };
+  state.engine.onStage((stage, pct) => {
+    els.engineBarFill.style.width = (pct || 0) + "%";
+    els.engineText.textContent = STAGE_LABEL[stage] || (stage + " " + (pct || 0) + "%");
+  });
   try {
     await state.engine.init();
-    els.engineBarFill.style.width = "100%";
-    els.engineText.textContent = "引擎就绪 ✓";
-    setTimeout(() => { els.engineBar.style.display = "none"; }, 600);
+    setTimeout(() => { els.engineBar.style.display = "none"; }, 800);
     state.engineReady = true;
     setState("ready");
     drainQueue();
   } catch (e) {
-    clearInterval(timer);
     els.engineText.innerHTML = `❌ 引擎加载失败: ${escapeHtml(e.message)}<br>` +
-      `提示: 需通过 http:// 访问(不能 file:// 直开), 且首次需联网加载 Pyodide CDN。`;
+      `建议: ① 微信内置浏览器可能对 jsdelivr/PyPI 限速或阻断 → 复制本页链接到系统浏览器(Chrome)打开; ` +
+      `② 首次加载需联网拉取约 30MB 资源, 请检查网络; ③ 断网/防火墙场景无法使用。`;
     setState("error");
   }
 }

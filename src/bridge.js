@@ -1,23 +1,36 @@
 // bridge.js —— 主线程 ↔ Worker 消息协议封装
 // 用法:
 //   const engine = createEngine();
-//   await engine.init(onProgress);                    // 首次加载引擎
+//   engine.onStage((stage, pct) => ...);   // 引擎加载阶段上报(可多次调用, 多次注册)
+//   await engine.init();                    // 首次加载引擎
 //   engine.convert(fileBytes, {password, sheet}, cb)  // cb: {onProgress,onDone,onError}
 //   engine.diagnose(fileBytes, filename, cb)
 
 export function createEngine() {
-  // 页面经 ES module 加载 app.js → 这里同样用 module Worker。
-  // worker.js 用 importScripts 加载 Pyodide(经典范式), 因此 worker 本身保持 classic 类型。
+  // worker.js 用 importScripts 加载 Pyodide(经典范式), 因此 worker 本身保持 classic 类型
   const worker = new Worker(new URL("./worker.js", import.meta.url));
   let nextId = 1;
   const pending = new Map();   // id → {onProgress,onDone,onError}
+  const stageHandlers = [];   // 阶段上报订阅
+  const logHandlers = [];     // 日志订阅(用于调试)
   let readyResolve = null;
   let readyReject = null;
 
   worker.onmessage = (e) => {
     const { type, id } = e.data || {};
+    if (type === "stage") {
+      for (const h of stageHandlers) h(e.data.stage, e.data.pct);
+      return;
+    }
+    if (type === "log") {
+      console.log("[engine]", e.data.text);
+      for (const h of logHandlers) h(e.data.text);
+      return;
+    }
     if (type === "ready") { if (readyResolve) readyResolve(); return; }
-    if (type === "error" && id === undefined) { if (readyReject) readyReject(new Error(e.data.message)); return; }
+    if (type === "error" && id === undefined) {
+      if (readyReject) readyReject(new Error(e.data.message)); return;
+    }
     const p = pending.get(id);
     if (!p) return;
     if (type === "progress") { p.onProgress && p.onProgress(e.data.page, e.data.total); return; }
@@ -32,12 +45,14 @@ export function createEngine() {
     if (type === "diag") { pending.delete(id); p.onDone && p.onDone(e.data.json); return; }
   };
   worker.onerror = (e) => {
-    // Worker 级错误(脚本加载失败等): 拒绝 ready 与全部 pending
     const msg = e.message || "worker 加载失败";
     if (readyReject) readyReject(new Error(msg));
     for (const [, p] of pending) p.onError && p.onError(new Error(msg));
     pending.clear();
   };
+
+  function onStage(handler) { stageHandlers.push(handler); }
+  function onLog(handler) { logHandlers.push(handler); }
 
   function init() {
     return new Promise((resolve, reject) => {
@@ -73,5 +88,5 @@ export function createEngine() {
     return id;
   }
 
-  return { init, convert, diagnose };
+  return { init, convert, diagnose, onStage, onLog };
 }

@@ -40,23 +40,33 @@ async function init() {
   if (py) return py;
   if (!initPromise) {
     initPromise = (async () => {
+      reportStage("pyodide-cdn", 5);
       await loadPyodideScript();
+      reportStage("pyodide-init", 15);
       self.pyodide = await loadPyodide();
       py = self.pyodide;
 
       // 1) openpyxl + xlsxwriter (纯 Python, micropip 可装)
+      reportStage("micropip", 25);
       await py.loadPackage("micropip");
+      reportStage("openpyxl", 40);
       await py.runPythonAsync(
-        `import micropip; await micropip.install("openpyxl"); await micropip.install("xlsxwriter")`);
+        `import micropip; await micropip.install("openpyxl")`);
+      reportStage("xlsxwriter", 55);
+      await py.runPythonAsync(
+        `import micropip; await micropip.install("xlsxwriter")`);
 
       // 2) PyMuPDF WASM wheel(共享库, 必须 loadPackage)
+      reportStage("wheel-17mb", 70);
       await py.loadPackage(WHEEL_URL);
+      reportStage("engine-fetch", 85);
 
       // 3) 引擎 + shim: 写虚拟 FS 后 import(不触发 __main__ 守卫)
       const [engSrc, shimSrc] = await Promise.all([
         fetchPySource(ENGINE_URL, "引擎源码"),
         fetchPySource(SHIM_URL, "shim"),
       ]);
+      reportStage("engine-import", 95);
       py.runPython(`import os; os.environ["PYODIDE"]="1"; os.makedirs("/lib/engine", exist_ok=True)`);
       py.FS.writeFile("/lib/engine/extract_bank_statement.py", engSrc);
       py.FS.writeFile("/lib/engine/shim.py", shimSrc);
@@ -77,14 +87,26 @@ def _install_js_progress(fn):
           self.postMessage({ type: "progress", id: currentConvertId, page, total });
         }
       });
+      reportStage("ready", 100);
       return py;
     })();
-    initPromise.catch(() => { initPromise = null; py = null; });
+    initPromise.catch((e) => {
+      reportLog("init 失败: " + (e.message || e));
+      initPromise = null; py = null;
+    });
   }
   return initPromise;
 }
 
 let currentConvertId = null;
+
+// ---- 阶段上报(替换假进度, 微信/慢网场景下能精确定位卡点) ----
+function reportStage(stage, pct) {
+  try { self.postMessage({ type: "stage", stage, pct }); } catch (e) {}
+}
+function reportLog(text) {
+  try { self.postMessage({ type: "log", text }); } catch (e) {}
+}
 
 function errPayload(e) {
   // Pyodide 的 PythonError.message 含完整 traceback; 取最后非空行(通常是
@@ -102,6 +124,7 @@ self.onmessage = async (e) => {
   try {
     if (type === "init") {
       await init();
+      // ready 在 init() 内 reportStage("ready", 100) 之后由 onmessage 这里再发一次
       self.postMessage({ type: "ready" });
       return;
     }
@@ -156,6 +179,11 @@ shim.export_diagnosis(open("diag_input.pdf","rb").read(), ${JSON.stringify(e.dat
       return;
     }
   } catch (err) {
+    reportLog("错误: " + (err.message || err));
     self.postMessage({ type: "error", id, ...errPayload(err) });
   }
+};
+
+self.onerror = (e) => {
+  reportLog("worker onerror: " + (e.message || "unknown"));
 };
