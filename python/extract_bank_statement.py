@@ -197,6 +197,57 @@ META_ROW_RE = re.compile(
 FOOTER_LINE_RE = re.compile(r"[─━—―\-_=]{10,}")
 
 
+def is_date_like_word(text):
+    """判断词是否为完整日期形态(YYYYMMDD / YYYY-MM-DD / YYYY/MM/DD 等)。
+
+    用途: 固定元素(水印)判定保护。日期列词必须原样保留 —— 即使它跨页出现在
+    相同坐标(每页首条记录布局一致的长文档很常见), 也绝不能当"水印"删除。
+    (浦发 144 页流水: 每页首条交易日期 '20240101' y=46.3, 若不加保护会被
+    clean_overlaps 整列清空 → 首条记录日期丢失。)"""
+    if not text:
+        return False
+    t = text.strip()
+    if re.fullmatch(r"(?:19|20)\d{2}[./-]?\d{1,2}[./-]?\d{1,2}", t)             and not is_time_word(t):
+        return True
+    return False
+
+# 对手机构代码词形态（村镇银行/城商行流水常见，如 %1000050201%02%99%%000）
+# 完整形态 / PDF 显示截断形态（%1...）
+COUNTERPART_CODE_RE = re.compile(r"^%\d[\d%]*%+\d*$")
+TRUNCATED_CODE_RE = re.compile(r"^%\d.*\.\.\.$")
+# 页脚页码形态（"第 3 页"/"共 131 页"/"第28/28页"/整行"18/18"）。
+# 用正则避免"共"字误伤数据（如"北京公共交通控股…"含"共"字）。
+# 注意: 纯数字斜杠必须整行锚定, 否则会误匹配日期"2025/01/03"(民生银行日期格式)。
+PAGE_FOOTER_RE = re.compile(
+    r"第\s*\d+\s*(/\s*\d+)?\s*页|共\s*\d+\s*页|^\s*\d{1,3}\s*/\s*\d{1,3}\s*$"
+)
+# 页眉/页脚行关键词（含这些词的行不进入数据区）。预编译为正则, 等价于原 any(k in text) 子串匹配
+META_KEYWORDS = [
+    "打印渠道", "打印柜员", "打印时间", "打印日期", "生成时间",
+    "客户名称", "客户账号", "币种", "开户机构", "起止日期", "对账单",
+    "温馨提示", "具体交易详情", "说明：", "查询时间", "查询完毕",
+    # 分页汇总/回单页脚(旅立方等): "本页汇总：统计：…"、"本页回单：第1-15笔 共34笔"
+    "本页汇总", "本页回单",
+    # 招商银行末页"合并统计"块(2026-08-19): "合并统计/合并收入(+)/合并支出(-)"
+    # 在末条记录下方, 不排除会被吸进末条记录的 货币/金额/摘要 列。
+    "合并统计", "合并收入", "合并支出",
+]
+META_RE = re.compile("|".join(re.escape(k) for k in META_KEYWORDS), re.I)
+
+# 元信息行(非交易, 整行排除): 查询时间/打印日期/分页汇总统计等
+META_ROW_RE = re.compile(
+    r"查询时间|打印日期"
+    r"|本页汇总|本页回单|^统计：",
+    re.I,
+)
+
+
+# 页脚装饰横线(10+ 连续横线/下划线字符, 如招商银行末页整行横线
+# '————————————…' 53 个 U+2500)。数据行不会出现 10+ 连续横线, 安全。
+# 2026-08-17 扩 '='(北京农商银行末页整行 ===)。
+FOOTER_LINE_RE = re.compile(r"[─━—―\-_=]{10,}")
+
+
 def is_footer_word(text):
     """判断是否为页脚/页眉词：命中页码形态正则、装饰横线 或 META_KEYWORDS。
     2026-08-19 修正: 装饰横线须**横线字符占比 ≥90% 且不含日期词**才算页脚
@@ -420,9 +471,11 @@ def detect_column_boundaries(page_words, header):
         bw = sorted(band_words, key=lambda w: w[0])
     clusters = []
     for w in bw:
-        # 聚类判据用 x0 差(≤8pt): 表头拆词段 x0 差 4-8pt(建行"交易时"49→"间"57);
+        # 聚类判据用 x0 差(≤12pt): 表头拆词段 x0 差 4-9pt(建行"交易时"58.6→"间"67.6,
+        # 中科擎云建行 17 列企业明细拆词间距 9pt; 原 8pt 阈值漏合并 → 列名"交易时"
+        # 缺"间"字 → 日期词被列限定过滤 → 提取 0 条记录, 2026-08-25 修正);
         # 相邻独立列 x0 差 ≥30pt(民生"凭证类型"200→"凭证号码"235)不误聚。
-        if clusters and w[0] - clusters[-1][-1][0] <= 8:
+        if clusters and w[0] - clusters[-1][-1][0] <= 12:
             clusters[-1].append(w)
         else:
             clusters.append([w])
@@ -938,7 +991,7 @@ def detect_table_grid(rects):
         if key in seen:
             continue  # 同一格常同时含 fill 与 stroke, 去重
         seen.add(key)
-        if d.get("type") == "f" and r.width > 5 and r.height > 5:
+        if d.get("type") in ("f", "s") and r.width > 5 and r.height > 5:
             cells.append(r)
     if len(cells) < 8:
         return None
@@ -961,17 +1014,115 @@ def detect_table_grid(rects):
     return vv, hh
 
 
-def grid_row_bands(hh, header_y, page_footer_y):
-    """网格行带: 表头行之下的行区间 [(y0,y1), ...], 每行 = 一条记录。"""
+def grid_row_bands(hh, header_y, page_footer_y, words=None, header_keywords=None):
+    """网格行带: 表头行之下的行区间 [(y0,y1), ...], 每行 = 一条记录。
+
+    表头带判别(2026-08-29 修正): 优先按"行带内文本是否含表头关键词"判定 ——
+    仅首页有表头的格式(浦发企业回单/浦发个人流水), 后续页网格里根本没有表头带,
+    若沿用首页 header_y 过滤, 该 y 会落进后续页某条数据行带, 把它误当表头带
+    剔除 → 行带数 != 记录数 → 网格路径整体失效。words 提供时按文本判别,
+    未提供时回退旧的 y 匹配(兼容既有调用)。"""
     bands = []
     for i in range(len(hh) - 1):
         y0, y1 = hh[i], hh[i + 1]
-        if y0 <= header_y < y1:
-            continue  # 表头带
         if y0 >= page_footer_y - 0.5:
             continue  # 页脚之下的残留带
+        if words is not None and header_keywords:
+            # 文本判别: 带内含 >=2 个表头关键词才算表头带
+            hits = sum(
+                1 for k in header_keywords
+                if any(k in w[4] for w in words if y0 - 0.5 <= (w[1] + w[3]) / 2 < y1 + 0.5)
+            )
+            if hits >= 2:
+                continue  # 表头带
+        elif y0 <= header_y < y1:
+            continue  # 表头带(旧 y 匹配回退)
         bands.append((y0, y1))
     return bands
+
+def split_cross_column_words(page, words, cols, margin=1.0):
+    """网格路径专用: 把横向跨越列边界的粘连词按字符级坐标切分回各列。
+
+    场景(浦发个人流水): "王毛敖海621700001"在 words 层是一个词(x=379-461,
+    横跨对手姓名列 377-418.8 与对手账号列 418.8-464.9), 词级 match_column
+    按起点 x 整词归入姓名列 → 账号丢前 9 位。rawdict 给出每字符精确 bbox:
+    '王毛敖海' x=379-415(姓名列), '621700001' x=420.8-461.3(账号列),
+    按字符中心点落列即可精确切分。
+
+    规则: 词起点列 != 词终点列(终点按词 x1-ε 定位)才切分; 单列词原样保留。
+    返回新词列表(tuple 结构与 pymupdf words 兼容: 前 5 元素为
+    (x0,y0,x1,y1,text), 其余字段从原词继承)。"""
+    def _col_at(x):
+        for i, (lo, hi, _) in enumerate(cols):
+            if lo - margin <= x < hi + margin:
+                return i
+        return None
+
+    out = []
+    need_raw = False
+    for w in words:
+        c0 = _col_at(w[0])
+        c1 = _col_at(w[2] - 0.01)
+        if c0 is None or c1 is None or c0 == c1:
+            out.append(w)
+            continue
+        need_raw = True
+        out.append(None)  # 占位, 待字符级切分
+    if not need_raw:
+        return out
+    try:
+        raw = page.get_text("rawdict")
+    except Exception:  # noqa: BLE001
+        return [w for w in out if w is not None] or list(words)
+    all_chars = []
+    for block in raw.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                for ch in span.get("chars", []):
+                    b = ch["bbox"]
+                    all_chars.append((b[0], b[1], b[2], b[3], ch["c"]))
+    result = []
+    for idx, w in enumerate(out):
+        if w is not None:
+            result.append(w)
+            continue
+        w = words[idx]  # 占位 → 原词
+        x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
+        sub = [c for c in all_chars
+               if y0 - 1 <= (c[1] + c[3]) / 2 <= y1 + 1 and x0 - 0.5 <= c[0] <= x1 + 0.5]
+        picked = []
+        pool = sorted(sub, key=lambda c: (round(c[1], 1), c[0]))
+        ti = 0
+        for c in pool:
+            if ti < len(text) and c[4] == text[ti]:
+                picked.append(c)
+                ti += 1
+        if not picked:
+            result.append(w)  # 匹配失败原样保留(归起点列)
+            continue
+        by_col = {}
+        for c in picked:
+            cx = (c[0] + c[2]) / 2
+            ci = _col_at(cx)
+            if ci is None:
+                ci = _col_at(c[0])
+            if ci is None:
+                ci = _col_at(w[0])
+            by_col.setdefault(ci, []).append(c)
+        for ci, cs in sorted(by_col.items()):
+            cs.sort(key=lambda c: c[0])
+            txt = "".join(c[4] for c in cs)
+            if not txt:
+                continue
+            nx0 = min(c[0] for c in cs)
+            nx1 = max(c[2] for c in cs)
+            # 继承原词第 5 位之后的字段(块/行/词号), 保持词元组结构
+            tail_fields = tuple(w[5:]) if len(w) > 5 else ()
+            result.append((nx0, y0, nx1, y1, txt) + tail_fields)
+    return result
+def _norm_anchor(s):
+    """锚点文本归一化: 去空白/全角空格(视觉模型输出可能带空格)。"""
+    return s.replace(" ", "").replace("\u3000", "").replace("\n", "").replace("\t", "")
 
 
 def _norm_anchor(s):
@@ -1497,7 +1648,9 @@ def _num(v):
     s = str(v).strip()
     if s == "":
         return None
-    m = re.search(r"[+-]?[\d,]+\.\d{2}", s)
+    # 2026-08-25: 兼容 PDF 无小数位金额词(建行企业明细 '50000.'/'17588.' 等,
+    # 源 PDF 渲染省略 .00): 正则从 强制两位小数 放宽为 可选 1-2 位小数。
+    m = re.search(r"[+-]?[\d,]+(?:\.\d{1,2})?", s)
     if m is None:
         return None
     try:
@@ -1625,6 +1778,26 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
     #  - 2/3 页同位置的合法续行/摘要词不被误删 ✓
     min_pages = max(3, int(page_count * 0.5))
     fixed_keys = {k for k, v in pos_counter.items() if v >= min_pages}
+    # 网格路径专用 fixed 子集(2026-08-29): 仅"位置唯一(同词x去重y数==1)"且
+    # 非日期/时间形态的词视为真固定元素。启发式路径仍用 full fixed_keys(不动),
+    # 该子集只用于网格行带路径的 clean_overlaps —— 浦发个人流水每页首条记录
+    # 布局一致, 交易账号续段 '82138'(143 页同坐标但 y 位置多变)被 full 判定
+    # 当水印删掉 → 账号截断; 网格路径用此子集可保住这类合法数据词。
+    fixed_keys_unique = None
+    try:
+        if fixed_keys:
+            _y_pos = {}
+            for pw in page_words_list:
+                for w in pw:
+                    _y_pos.setdefault((w[4], round(w[0], 1)), set()).add(round(w[1], 1))
+            fixed_keys_unique = {
+                k for k in fixed_keys
+                if len(_y_pos.get((k[0], k[1]), ())) <= 1
+                and not is_date_like_word(k[0])
+                and not is_time_word(k[0])
+            }
+    except Exception:  # noqa: BLE001
+        fixed_keys_unique = fixed_keys
     if fixed_keys:
         log(f"[DEBUG] 检测到 {len(fixed_keys)} 个跨页固定元素候选, 仅清理冲突/孤立项", debug)
 
@@ -1684,6 +1857,12 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
             d = doc[pno].get_drawings()
             _drawings_cache[pno] = d
         return d
+
+    def _page(pno):
+        return doc[pno]
+
+    def _page_words(pno):
+        return page_words_list[pno]
 
     grid_edges = None
     try:
@@ -1894,12 +2073,34 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
                 tail_margin = max(15.0, 2.0 * gaps2[len(gaps2) // 2])
             else:
                 tail_margin = 45.0
-            tail_cut = last_dy + tail_margin
-            tail_footer = min(
-                (y for y in page_rows if y > tail_cut and not row_has_date[y]),
-                default=10**9,
+# 网格优先(2026-08-29): 网格行带路径可用(与主流程网格分支同一门控:
+            # grid_edges 非空, 已含"网格列数==启发式列数"校验)且本页网格行带数 ==
+            # 日期行数时, 记录边界由网格行带精确给出, 页脚天然隔离在网格之外 ——
+            # 跳过尾部页脚兜底收紧。否则启发式 tail_cut(末条日期行+45pt)会把末页
+            # 长续行(浦发个人流水末页摘要 ID623336334 延伸到 y=126, 而
+            # tail_cut=91)误判为页脚整段剔除。
+            # 可用性判据必须完整: 浦发企业回单网格 17 列 != 启发式 9 列, 行带路径
+            # 实际不可用(grid_edges=None), 若误判可用而跳过 tail, 每页末条记录会
+            # 吞进页尾公告。
+            _grid_hh2 = None
+            if grid_edges is not None:
+                try:
+                    _gv2, _gh2 = detect_table_grid(_page_drawings(pno))
+                    if _gv2 is not None:
+                        _grid_hh2 = _gh2
+                except Exception:  # noqa: BLE001
+                    _grid_hh2 = None
+            _grid_path_ok = (
+                _grid_hh2 is not None
+                and len(_grid_hh2) - 1 == len(date_rows_all_in_page)
             )
-            page_footer_y = min(page_footer_y, tail_footer)
+            if not _grid_path_ok:
+                tail_cut = last_dy + tail_margin
+                tail_footer = min(
+                    (y for y in page_rows if y > tail_cut and not row_has_date[y]),
+                    default=10**9,
+                )
+                page_footer_y = min(page_footer_y, tail_footer)
             # 边注行兜底: 最后日期行之后、tail_cut 之前, 无日期且超出表格右缘的行
             # → 提前截断, 防止整段侧栏文字混入末条记录; 正常续行都在表格宽度内。
             marginalia = min(
@@ -1956,8 +2157,16 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
             if _is_stamp_code_word(w):
                 continue
             # 跨页固定元素仍限非数据行剔除, 避免误删同位置合法数据。
+            # 2026-08-29: 网格路径可用(grid_edges 非空)时用 fixed_keys_unique
+            # (位置唯一子集)判定 —— 浦发个人流水每页首条记录续行(账号段 82138 等)
+            # 在 fixed_keys 里但 y 位置多变, 非数据行(词数<4)判定会把它误剔 →
+            # 账号截断; unique 子集只认真水印。非网格格式(工行宫格水印等)保持
+            # full fixed_keys 原行为, 避免水印残留回归。
+            _fk_here = fixed_keys_unique if (
+                fixed_keys_unique is not None and grid_edges is not None
+            ) else fixed_keys
             if (round(w[1]) not in _data_row_ys) and (
-                (w[4], round(w[0], 1), round(w[1], 1)) in fixed_keys
+                (w[4], round(w[0], 1), round(w[1], 1)) in _fk_here
             ):
                 continue
             region.append(w)
@@ -2051,8 +2260,19 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
             except Exception:  # noqa: BLE001
                 _gv, _gh = None, None
             if _gv is not None:
-                rows = grid_row_bands(_gh, page_header_y, page_footer_y)
+# 表头带判别升级(2026-08-29): 用行带内文本含表头关键词判定,
+                # 不再依赖 header_y 落点 —— 仅首页有表头的格式(浦发企业回单/
+                # 浦发个人流水), 首页表头 y 会落进后续页某条数据行带, 按 y 匹配
+                # 会把该带误当表头带剔除 → 行带数 != 记录数 → 网格路径失效。
+                rows = grid_row_bands(_gh, page_header_y, page_footer_y,
+                                      words=_page_words(pno),
+                                      header_keywords=DEFAULT_HEADER_KEYWORDS)
                 if len(rows) == len(date_rows):
+                    # 网格路径列归属升级(2026-08-29): 跨列词按字符级坐标切分。
+                    # 词级 match_column 只看词起点 x, "王毛敖海621700001"这类
+                    # 跨姓名/账号两列的粘连词会整词归入起点列; 网格既然给出
+                    # 精确列边界, 就用 rawdict 字符 bbox 把跨列词切开归位。
+                    region = split_cross_column_words(_page(pno), region, cols)
                     grid_clusters = [
                         [w for w in region if r0 <= (w[1] + w[3]) / 2 < r1]
                         for r0, r1 in rows
@@ -2065,7 +2285,11 @@ def extract_statement(doc, date_patterns, debug=False, columns_template=None,
                                                    absorb=absorb, boundaries=boundaries))
         for ci_cluster, cluster in cluster_iter:
             # 清理水印/页脚公告等固定元素
-            cluster = clean_overlaps(cluster, fixed_keys, cols, date_patterns, debug)
+            # 网格路径(行带精确分界)用"位置唯一"子集 fixed_keys_unique ——
+            # 每页首条记录同坐标重复的合法数据词(浦发账号续段)不会被误删;
+            # 启发式路径(slice_records)用 full fixed_keys(历史行为不变)。
+            _fk = fixed_keys_unique if grid_clusters is not None else fixed_keys
+            cluster = clean_overlaps(cluster, _fk, cols, date_patterns, debug)
             if not cluster:
                 continue
             group_date = None
@@ -2881,8 +3105,8 @@ def write_failure_diag(pdf_path, out_path, exc, escalation=None,
                     doc[page - 1].get_pixmap(
                         matrix=pymupdf.Matrix(1.5, 1.5)).save(png)
                     diag["png"] = png
-                with open(diag_path, "w", encoding="utf-8") as f:
-                    json.dump(diag, f, ensure_ascii=False, indent=2)
+                    with open(diag_path, "w", encoding="utf-8") as f:
+                        json.dump(diag, f, ensure_ascii=False, indent=2)
             finally:
                 doc.close()
         except Exception:  # noqa: BLE001
@@ -2919,6 +3143,11 @@ def _to_date_value(v):
         return v
     # 农业银行交易时间列因 PDF 日期跨行换行产生 "2025-01- 02": 去掉分隔符后空格
     s = re.sub(r"(?<=\d)([-/.])\s+(?=\d)", r"\1", s)
+    # 6 位纯数字(如浦发 '093351' = 09:33:51)是时间不是日期: 若直接进 %Y%m%d
+    # strptime, 正则回溯会解析成 '0933-05-01' 这类荒谬日期。先按时间词拦截,
+    # 合法 6 位时分秒保持原文本(时间列语义)。
+    if re.fullmatch(r"\d{6}", s) and is_time_word(s):
+        return s
     for fmt, has_time in _DATE_PARSE_PATTERNS:
         try:
             dt = datetime.strptime(s, fmt)
@@ -2948,7 +3177,9 @@ def _to_money_value(v):
     if not s:
         return v
     t = re.sub(r"[\s,，￥¥]", "", s)
-    m = re.search(r"[-+]?\d+(?:\.\d+)?$", t)
+    # 2026-08-25: 兼容 PDF 无小数位金额词(建行企业明细 '50000.' 等, 源 PDF
+    # 渲染省略 .00): (?:\.\d+)? → (?:\.\d*)?, 允许小数点后 0 位(仍整词锚定)。
+    m = re.search(r"[-+]?\d+(?:\.\d*)?$", t)
     if not m:
         return v
     try:
@@ -3143,9 +3374,7 @@ def _write_xlsx_openpyxl(out_path, sheet_name, header_names, typed,
 
 def _write_xlsx(out_path, sheet_name, header_names, typed, aligns, widths, keep_text):
     """写 xlsx: 优先 xlsxwriter 流式(constant_memory, 大文件快 0.5-1s);
-    环境缺 xlsxwriter 时回退 openpyxl 路径(输出契约一致)。
-    PYODIDE 模式: out_path 允许传 io.BytesIO(写入内存返回前端);
-    xlsxwriter 同样支持 BytesIO 目标, 两条路径均兼容。"""
+    环境缺 xlsxwriter 时回退 openpyxl 路径(输出契约一致)。"""
     try:
         import xlsxwriter  # noqa: F401
     except Exception:  # noqa: BLE001
