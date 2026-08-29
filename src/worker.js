@@ -84,6 +84,7 @@ async function init() {
       //    ⚠️ 只用最简签名: Pyodide 0.27.x 的 micropip 没有 add_wheel_log_handler /
       //    keep_going 等 API(实测 AttributeError), 任何多余参数都会炸。
       reportStage("wheel-17mb", 70);
+      const wheelErrors = [];  // 收集每次失败详情, 最后抛到 UI
       let wheelInstalled = false;
       for (let i = 0; i < WHEEL_PAIRS.length; i++) {
         const url = WHEEL_PAIRS[i];
@@ -107,10 +108,15 @@ except asyncio.TimeoutError:
           reportLog(`wheel: 来自 ${url} 安装成功`);
           wheelInstalled = true; break;
         } catch (e) {
-          reportLog(`wheel: ${url} 失败 → ${e.message || e}`);
+          const detail = (e.message || String(e)).slice(-400);  // 取尾部, 跳过 traceback 噪音
+          reportLog(`wheel: ${url} 失败 → ${detail}`);
+          wheelErrors.push(`${tag}(${url.split("/").slice(-2).join("/")}): ${detail.split("\n").pop()}`);
         }
       }
-      if (!wheelInstalled) throw new Error("wheel 安装失败(主+备 URL 均失败, 请检查网络或刷新重试)");
+      if (!wheelInstalled) {
+        const lastDetail = wheelErrors.length ? wheelErrors.join(" | ") : "(无详情)";
+        throw new Error("wheel 安装失败(主+备 URL 均失败, 请检查网络或刷新重试) " + lastDetail);
+      }
       reportStage("engine-fetch", 85);
 
       // 3) 引擎 + shim: 写虚拟 FS 后 import(不触发 __main__ 守卫)

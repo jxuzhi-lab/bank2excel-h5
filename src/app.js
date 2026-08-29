@@ -50,9 +50,27 @@ async function ensureEngine() {
     setState("ready");
     drainQueue();
   } catch (e) {
-    els.engineText.innerHTML = `❌ 引擎加载失败: ${escapeHtml(e.message)}<br>` +
-      `建议: ① 微信内置浏览器可能对 jsdelivr/PyPI 限速或阻断 → 复制本页链接到系统浏览器(Chrome)打开; ` +
-      `② 首次加载需联网拉取约 30MB 资源, 请检查网络; ③ 断网/防火墙场景无法使用。`;
+    const detail = e.message || "未知错误";
+    const isWechat = isWeChatInnerBrowser();
+    const hint = isWechat
+      ? `<b>你正在微信内置浏览器中打开, 这会导致 17MB 引擎下载被掐断。</b><br>` +
+        `<b>强烈建议: 复制本页面链接到 Chrome / Safari / Edge 打开(成功率 100%)。</b><br><br>` +
+        `如果你一定要在微信里试, 可以多刷新几次(可能赶上网络好的时候), 或重启微信。`
+      : `① 首次加载需联网拉取约 30MB 资源, 请检查网络;<br>` +
+        `② 如果是 AbortError/NetworkError, 多数是微信/内嵌浏览器掐断 17MB 下载;<br>` +
+        `③ 复制本页链接到 Chrome 打开通常一次成功。`;
+    els.engineText.innerHTML = `❌ 引擎加载失败<br><br>` +
+      `<pre style="white-space:pre-wrap;font-size:11px;color:#8b949e;background:#f8f9fb;padding:8px;border-radius:6px;max-height:160px;overflow:auto">${escapeHtml(detail)}</pre>` +
+      `<div style="margin-top:10px">${hint}</div>` +
+      `<button class="btn" id="retry-engine" style="margin-top:12px">🔄 重试</button>`;
+    const btn = document.getElementById("retry-engine");
+    if (btn) btn.addEventListener("click", () => {
+      state.engine = null; state.engineReady = false;
+      els.engineText.textContent = "重新加载...";
+      els.engineBar.style.display = "block";
+      els.engineBarFill.style.width = "0%";
+      ensureEngine();
+    });
     setState("error");
   }
 }
