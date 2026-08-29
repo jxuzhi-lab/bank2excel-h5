@@ -3195,7 +3195,7 @@ def write_failure_diag(pdf_path, out_path, exc, escalation=None,
 # 日期/时间列与金额/余额列默认输出为 Excel 真类型(可筛选/排序/求和)。
 # 需要与旧版本一致的纯文本输出时, 用 --keep-text。
 DATE_COL_HINTS = ("日期", "时间")
-MONEY_COL_HINTS = ("金额", "余额", "发生额", "收入", "支出", "借方", "贷方", "手续费")
+MONEY_COL_HINTS = ("金额", "余额", "结余", "结存", "发生额", "收入", "支出", "借方", "贷方", "手续费")
 _DATE_PARSE_PATTERNS = (
     ("%Y-%m-%d %H:%M:%S", True),
     ("%Y-%m-%d %H:%M", True),
