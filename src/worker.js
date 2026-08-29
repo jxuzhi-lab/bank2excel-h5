@@ -80,11 +80,38 @@ async function init() {
       await py.runPythonAsync(
         `import micropip; await micropip.install("xlsxwriter")`);
 
-      // 2) PyMuPDF WASM wheel(共享库, 必须 loadPackage)
+      // 2) PyMuPDF WASM wheel(共享库)——用 micropip.install 单 URL 重试,
+      //    比 loadPackage(URL列表)更稳。带 30s/URL 硬超时, 移动网卡住就跳下一个。
       reportStage("wheel-17mb", 70);
-      // loadPackage 接受 URL 列表(0.27 支持), 主备自动切换; 但 jsdelivr mirror 与同源
-      // URL 内容相同(都是 GitHub raw), 直接传同源 URL 即可(jsdelivr 已确认 200)
-      await py.loadPackage(WHEEL_PAIRS);
+      let wheelInstalled = false;
+      for (let i = 0; i < WHEEL_PAIRS.length; i++) {
+        const url = WHEEL_PAIRS[i];
+        const tag = i === 0 ? "主" : "备";
+        reportLog(`wheel: 尝试${tag}源 ${i + 1}/${WHEEL_PAIRS.length} (${url})`);
+        try {
+          await Promise.race([
+            py.runPythonAsync(`
+import asyncio
+import sys
+import micropip
+micropip.add_wheel_log_handler(lambda *a, **k: None)  # 抑制默认 stdout 日志
+try:
+    await asyncio.wait_for(
+        micropip.install(${JSON.stringify(url)}, keep_going=False, deps=False, pre=False),
+        timeout=60,
+    )
+except asyncio.TimeoutError:
+    raise RuntimeError("wheel install timeout 60s")
+`),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("wheel install timeout 60s")), 70_000)),
+          ]);
+          reportLog(`wheel: 来自 ${url} 安装成功`);
+          wheelInstalled = true; break;
+        } catch (e) {
+          reportLog(`wheel: ${url} 失败 → ${e.message || e}`);
+        }
+      }
+      if (!wheelInstalled) throw new Error("wheel 安装失败(主+备 URL 均失败, 请检查网络或刷新重试)");
       reportStage("engine-fetch", 85);
 
       // 3) 引擎 + shim: 写虚拟 FS 后 import(不触发 __main__ 守卫)
