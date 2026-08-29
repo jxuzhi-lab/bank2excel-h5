@@ -203,11 +203,47 @@ function toast(msg) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 6000);
 }
+
+// 应急: 清空 Service Worker + CacheStorage, 用于"代码已修但浏览器还在跑旧 SW"的情形
+async function resetBrowserCache() {
+  if (navigator.serviceWorker) {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) await r.unregister();
+  }
+  if (typeof caches !== "undefined") {
+    const names = await caches.keys();
+    for (const n of names) await caches.delete(n);
+  }
+  location.reload();
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
+
+// 自动检测旧 SW: 启动时若有未识别版(sw.js 不含 v3+ 标记), 主动清理并刷新
+(async function autoResetOldSW() {
+  if (!navigator.serviceWorker) return;
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) {
+      const script = r.active && r.active.scriptURL;
+      // 用 v3 以后的 SW 都会带自身版本号在 URL 上; 旧版没带 → 清掉
+      // 简单粗暴但有效: 任何已激活的 sw.js 都强制 unregister 一次
+      if (script && /sw\.js(\?|$)/.test(script)) {
+        await r.unregister();
+        // 清掉 SW 缓存
+        if (typeof caches !== "undefined") {
+          const names = await caches.keys();
+          for (const n of names) await caches.delete(n);
+        }
+        location.reload();
+        return;
+      }
+    }
+  } catch (e) { /* ignore */ }
+})();
 
 // 微信内嵌环境: 页面加载即提示
 if (isWeChatInnerBrowser()) {

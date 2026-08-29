@@ -94,7 +94,7 @@
 // PWA / 离线缓存: 首次成功后 wheel+Pyodide 进缓存, 二次秒开
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((err) => {
+    navigator.serviceWorker.register("./sw.js?v=3").catch((err) => {
       console.warn("SW 注册失败(不影响使用):", err);
     });
   });
