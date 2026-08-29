@@ -5,3 +5,5 @@ python-multipart==0.0.9
 pymupdf==1.26.7
 openpyxl==3.1.5
 xlsxwriter==3.2.0
+# 扫描件 OCR 夹心层(服务端专属; opencv 需 Dockerfile 补 libgl1/libglib2.0-0)
+rapidocr_onnxruntime==1.4.4

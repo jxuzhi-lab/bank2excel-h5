@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.join(BASE, "python"))
 
 import extract_bank_statement as eng  # noqa: E402  完整引擎(PYODIDE 未设 → CPython 全功能)
 import vision_utils as vu  # noqa: E402
+import ocr_layer  # noqa: E402  服务端扫描件 OCR 夹心层(OCR_ENABLED 可关)
 
 app = FastAPI(title="bank2excel-h5 server", docs_url=None, redoc_url=None)
 
@@ -47,6 +48,8 @@ DESC_CACHE_DIR = os.environ.get(
 VLM_BUDGET = int(os.environ.get("VLM_BUDGET_PER_HOUR", "40") or "0")
 RATE_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "12") or "0")
 MAX_CONCURRENT = max(1, int(os.environ.get("MAX_CONCURRENT", "2") or "2"))
+OCR_ENABLED = os.environ.get("OCR_ENABLED", "1").strip().lower() not in (
+    "0", "false", "off", "no")
 
 try:
     os.makedirs(DESC_CACHE_DIR, exist_ok=True)
@@ -135,6 +138,7 @@ def health():
         "engine": "full(escalation+onboard)",
         "vision_provider": VLM_PROVIDER,
         "vlm_budget_per_hour": VLM_BUDGET or None,
+        "ocr_enabled": OCR_ENABLED,
         "descriptor_cache": {"dir": DESC_CACHE_DIR, "count": n_desc},
     }
 
@@ -157,9 +161,26 @@ def convert(request: Request, file: UploadFile = File(...), password: str = ""):
             out_path = os.path.join(td, "out.xlsx")
             with open(pdf_path, "wb") as f:
                 f.write(data)
+            # 扫描件 OCR 夹心层(2026-08-29): 含无文字层的页时, 先 OCR 成
+            # 不可见文字夹心层再走引擎 —— 对纯文字层 PDF 零开销。
+            convert_src, ocr_pages = pdf_path, 0
+            if OCR_ENABLED:
+                try:
+                    _doc = ocr_layer.pymupdf.open(pdf_path)
+                    _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
+                    _doc.close()
+                    if _need:
+                        scan_pdf = os.path.join(td, "scan_sandwich.pdf")
+                        ocr_pages, _total, _secs = ocr_layer.build_text_layer(
+                            pdf_path, scan_pdf)
+                        if ocr_pages:
+                            convert_src = scan_pdf
+                except Exception as oe:  # noqa: BLE001 (OCR 失败按原样走引擎报扫描件错误)
+                    ocr_pages = -1
+                    print(f"[提示] OCR 预处理失败: {oe}")
             try:
                 eng.convert_pdf(
-                    pdf_path, out_path=out_path, sheet="对账单",
+                    convert_src, out_path=out_path, sheet="对账单",
                     password=password or None,
                     quick_classify=True, diag=True,
                     onboard_cache=DESC_CACHE_DIR,
@@ -174,10 +195,13 @@ def convert(request: Request, file: UploadFile = File(...), password: str = ""):
     # 中文文件名: RFC 5987 编码(Header 必须 latin-1 可表示)
     from urllib.parse import quote
     cd = f"attachment; filename*=UTF-8''{quote(out_name)}"
+    resp_headers = {"Content-Disposition": cd}
+    if ocr_pages:
+        resp_headers["X-OCR-Pages"] = str(ocr_pages)  # 负数=OCR 失败仍由规则路径拒绝
     return Response(
         content=xlsx,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": cd},
+        headers=resp_headers,
     )
 
 

@@ -174,6 +174,15 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 
 **运维坑（已修, 记录防回退）**：`./descriptors` 卷目录若被 Docker 首次自动创建会归 root 所有, 容器内 `app` 用户(uid 1000)写不进（报 Permission denied, 转换仍成功但不缓存）。修复：`sudo chown -R 1000:1000 /opt/bank2excel-h5/descriptors`。
 
+**扫描件 OCR（2026-08-29 新增, 服务端专属）**：`ocr_layer.py`（仓库根, server 专属模块）实现"夹心层"方案——无文字层的页渲染位图 → RapidOCR（rapidocr_onnxruntime 1.4.4, CPU 推理, 模型进程内懒加载）逐行识别 → 识别文本按检测框坐标以**不可见文字**(render_mode=3)写回 PDF → 引擎零改动直接转换。server.py 在 `OCR_ENABLED=1`（默认开）时自动走此路径, 成功响应带 `X-OCR-Pages` 头。**实测**（北京银行 3 页扫描件 180dpi JPEG）：58/58 行恢复, 交易日期/发生额/余额三列与登记基准 100% 一致, 金额合计分毫不差；已知边界：单字符列（钞汇）与脱敏 `*` 号跨列会漂移（行级 OCR 框固有限制）。性能：~8s/页（含模型首次加载）, 容器内存峰值 ~330MB。
+
+**OCR 部署坑（逐个踩过）**：
+- Dockerfile 新增模块（ocr_layer.py）**必须加 COPY 行**, 否则容器 import 失败无限重启（Restarting 循环）
+- `deb.debian.org` 国内不稳定会卡死 apt → Dockerfile sed 换 `mirrors.tuna.tsinghua.edu.cn`（trixie 的源在 /etc/apt/sources.list.d/debian.sources）
+- opencv 需要 `libgl1 libglib2.0-0`（apt 已加）
+- Docker workers 2→1：OCR 模型每 worker 独立加载 ~500MB, 2G 小鸡扛不住双份；单 worker + MAX_CONCURRENT=2 线程并发够用
+- SSH 断连后 `setsid docker compose up -d --build &` 会留孤儿进程, 多个 up 并发报"容器名已被占用"互相打架 → 先 `pkill -9 -f 'docker compose'` 清场再触发
+
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
