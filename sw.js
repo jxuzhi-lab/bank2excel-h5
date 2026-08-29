@@ -30,6 +30,14 @@ self.addEventListener("activate", (e) => {
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
+      // v3 一次性自我注销: 强制浏览器清掉所有旧 SW 控制权, 下次硬刷
+      // 会以全新 SW 接管(避免旧 SW 缓存的旧 worker.js 反复触发 keep_going 报错)
+      .then(() => {
+        if (CACHE === "bank2excel-h5-v3") {
+          // 仅本版本自我注销; 之后版本不再触发
+          return self.registration.unregister();
+        }
+      })
   );
 });
 
