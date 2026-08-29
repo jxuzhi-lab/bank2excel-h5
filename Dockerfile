@@ -6,16 +6,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 系统依赖(字体/时区, pymupdf 纯 wheel 无需编译)
+# 系统依赖: 仅 tzdata(服务端只做 PDF 文本提取, 不需要中文字体渲染; 砍掉 fonts-noto-cjk 加速构建)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    fonts-noto-cjk \
     tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
-# Python 依赖(固定版本保证可复现)
+# Python 依赖(固定版本; 用清华 PyPI 镜像加速国内构建)
 COPY requirements-server.txt .
-RUN pip install --no-cache-dir -r requirements-server.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements-server.txt
 
 # 引擎(server.py 运行时 import shim → extract_bank_statement)
 COPY server.py .
