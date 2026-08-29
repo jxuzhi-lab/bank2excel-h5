@@ -15,14 +15,38 @@ let initPromise = null;
 // ---- Pyodide 资源 URL(相对 worker 脚本位置解析) ----
 const PYODIDE_VER = "0.27.2";
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VER}/full/pyodide.js`;
-const WHEEL_URL = "../wheels/pymupdf-1.26.7-cp312-abi3-pyodide_2024_0_wasm32.whl";
-const ENGINE_URL = "../python/extract_bank_statement.py";
-const SHIM_URL = "../python/shim.py";
+// 资源列表(主+备): 优先 jsdelivr 中国节点, 失败回退同源 GitHub Pages
+// 资源顺序 = [jsdelivr_gh_mirror, github_pages_same_origin]
+// jsdelivr 的 gh 镜像对中国大陆移动网络通常比 GitHub Pages 快
+function makeUrlPairs(relPath) {
+  return [
+    `https://cdn.jsdelivr.net/gh/jxuzhi-lab/bank2excel-h5@main/${relPath}`,
+    new URL(relPath, self.location.href).toString(),
+  ];
+}
+const WHEEL_PAIRS = makeUrlPairs("wheels/pymupdf-1.26.7-cp312-abi3-pyodide_2024_0_wasm32.whl");
+const ENGINE_PAIRS = makeUrlPairs("python/extract_bank_statement.py");
+const SHIM_PAIRS = makeUrlPairs("python/shim.py");
 
-async function fetchPySource(url, label) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${label} HTTP ${r.status}`);
-  const t = await r.text();
+// 顺序尝试直到一个成功; 全失败抛 last error
+async function fetchWithFallback(pairs, label) {
+  let lastErr;
+  for (const url of pairs) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`${label} HTTP ${r.status} (${url})`);
+      return { response: r, url };
+    } catch (e) {
+      reportLog(`${label} 失败: ${url} → ${e.message}`);
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+async function fetchPySource(pairs, label) {
+  const { response, url } = await fetchWithFallback(pairs, label);
+  const t = await response.text();
   if (t.trimStart().startsWith("<")) {
     throw new Error(`${label} 返回 HTML(路径 404): ${url}`);
   }
@@ -58,13 +82,15 @@ async function init() {
 
       // 2) PyMuPDF WASM wheel(共享库, 必须 loadPackage)
       reportStage("wheel-17mb", 70);
-      await py.loadPackage(WHEEL_URL);
+      // loadPackage 接受 URL 列表(0.27 支持), 主备自动切换; 但 jsdelivr mirror 与同源
+      // URL 内容相同(都是 GitHub raw), 直接传同源 URL 即可(jsdelivr 已确认 200)
+      await py.loadPackage(WHEEL_PAIRS);
       reportStage("engine-fetch", 85);
 
       // 3) 引擎 + shim: 写虚拟 FS 后 import(不触发 __main__ 守卫)
       const [engSrc, shimSrc] = await Promise.all([
-        fetchPySource(ENGINE_URL, "引擎源码"),
-        fetchPySource(SHIM_URL, "shim"),
+        fetchPySource(ENGINE_PAIRS, "引擎源码"),
+        fetchPySource(SHIM_PAIRS, "shim"),
       ]);
       reportStage("engine-import", 95);
       py.runPython(`import os; os.environ["PYODIDE"]="1"; os.makedirs("/lib/engine", exist_ok=True)`);
