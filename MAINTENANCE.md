@@ -149,11 +149,45 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 
 ---
 
-## 八、快速参考
+## 八、T1 未知格式识别（2026-08-29 新增，服务端兜底架构）
+
+**核心机制**（详见方案讨论记录）：未知格式识别放 VPS 端，识别本身仍由规则管道做，VLM 只做"每文件一次读表头列名"的高层判断。`server.py` 已从 shim/PYODIDE 版升级为**完整引擎**（`eng.convert_pdf`，非 PYODIDE 路径），失败自动走两级升级链：
+
+1. 表头识别失败 → 视觉兜底（读列名 → 锚点反查 → 规则管道重提）
+2. 兜底成功 → 锚点补全描述符 → **真实提取校验通过才落缓存**（防坏描述符污染）
+3. 同格式后续请求 → 首页文字指纹（sha256）命中缓存 → **零视觉成本直取**
+4. 缓存重试失败（版式漂移）→ 强制刷新缓存重走兜底
+
+**视觉 provider**（`vision_utils.py`，四态）：`visionjs`（外部 node 脚本，开发机残留可用）/ `model`（代理读图回环）/ **`api`（新增：直连 OpenAI 兼容视觉接口，标准库 urllib，无新增依赖）** / `none`（纯规则）。auto 顺序：显式 env → visionjs 可用 → api 配置齐全 → none。
+
+**VPS 启用 VLM 兜底**（docker-compose.yml 已留注释模板，三行配上即生效）：
+```yaml
+- BANK_PDF_VISION_PROVIDER=api
+- BANK_PDF_VISION_API_BASE=https://open.bigmodel.cn/api/paas/v4   # 或其它 OpenAI 兼容端点
+- BANK_PDF_VISION_API_KEY=sk-xxx
+# 可选: BANK_PDF_VISION_API_MODEL(默认 glm-4v-flash)
+```
+
+**成本/安全控制**（server.py，env 可调）：`VLM_BUDGET_PER_HOUR=40`（超限自动降级纯规则，包装在 call_vision_raw 唯一出口）/ `RATE_LIMIT_PER_MIN=12`（每 IP）/ `MAX_CONCURRENT=2`。**隐私**：文件转换完即删；仅视觉启用且规则失败时，第 1 页渲染图才发给所配 VLM；描述符只含列模板不含数据。
+
+**关键文件**：
+- `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
+- `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
+- 描述符缓存：VPS 挂卷 `./descriptors:/data/descriptors`（重建不丢）；本机服务默认 `bank2excel-h5/_descriptors/`
+- 描述符回流（未做）：VPS 缓存审核后入库 → H5/Pages 通道也能消费描述符（纯规则数据）
+
+**已知行为**：无视觉配置时未知格式返回 422 结构化错误（stage/suggestion + 诊断包 JSON，前端可一键下载），替代原来的裸错误文本。
+
+---
+
+## 九、快速参考
 
 ```bash
 # 本地回归(用项目 venv, 系统 python 3.7 跑不了)
 cd bank2excel-h5/python && "C:/Users/Administrator/Documents/银行对账单转化pdf/.venv/Scripts/python.exe" m1_check.py
+
+# T1 兜底链路端到端冒烟(自建假 VLM, 无需真实 key)
+cd bank2excel-h5 && "C:/Users/Administrator/Documents/银行对账单转化pdf/.venv/Scripts/python.exe" tests/test_vps_fallback.py
 
 # 本机服务
 cd bank2excel-h5 && start_server.bat   # 或 python server.py --port 8766

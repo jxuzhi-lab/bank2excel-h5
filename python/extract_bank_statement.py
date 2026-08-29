@@ -2715,14 +2715,73 @@ def load_columns_template(path):
     return cols
 
 
+def _cached_descriptor(pdf_path, cache_dir, doc_fp):
+    """读描述符指纹缓存(只读, 不生成)。命中返回 (path, desc), 未命中 (None, None)。"""
+    if not (pdf_path and doc_fp):
+        return None, None
+    cache_dir = cache_dir or os.path.join(
+        os.path.dirname(os.path.abspath(pdf_path)), "_descriptors")
+    path = os.path.join(cache_dir, f"desc_{doc_fp}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return path, json.load(f)
+        except Exception:  # noqa: BLE001
+            pass
+    return None, None
+
+
+def _cache_descriptor_from_anchors(pdf_path, anchors, password, cache_dir,
+                                   doc_fp, force=False, debug=False):
+    """视觉兜底成功后: 由锚点补全完整描述符, 经真实提取校验通过后落缓存。
+    同格式后续请求即可命中指纹缓存, 零视觉成本; 任一环节失败静默(不影响本次成功)。"""
+    if not (pdf_path and doc_fp and anchors):
+        return
+    cache_dir = cache_dir or os.path.join(
+        os.path.dirname(os.path.abspath(pdf_path)), "_descriptors")
+    path = os.path.join(cache_dir, f"desc_{doc_fp}.json")
+    if os.path.exists(path) and not force:
+        return
+    try:
+        import onboard_format as ob
+        desc = ob.build_format_descriptor(
+            pdf_path, password=password, mode="anchors",
+            anchors=",".join(anchors), debug=debug)
+        if not desc or not desc.get("columns"):
+            return
+        _vdoc = pymupdf.open(pdf_path)
+        try:
+            if _vdoc.needs_pass and not (password and _vdoc.authenticate(password)):
+                return
+            _vp = ([re.compile(desc["date_pattern"])]
+                   if desc.get("date_pattern") else None)
+            extract_statement(
+                _vdoc, _vp if _vp is not None else DEFAULT_DATE_PATTERNS,
+                columns_template=_desc_columns(desc),
+                layout=desc.get("layout"),
+                footer_extra=desc.get("footer_keywords"),
+                semantics=_desc_semantics(desc),
+                header_anchors=_desc_anchors(desc))
+        finally:
+            _vdoc.close()
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(desc, f, ensure_ascii=False, indent=2)
+        log(f"[提示] 视觉兜底成功, 描述符已校验入缓存: {path}", debug)
+    except Exception as e:  # noqa: BLE001
+        log(f"[提示] 描述符缓存补全失败(不影响本次结果): {e}", debug)
+
+
 def _vision_fallback_extract(doc, patterns, debug=False, password=None,
-                             original_error=None):
+                             original_error=None, pdf_path=None,
+                             cache_dir=None, doc_fp=None, cache_force=False):
     """P0-1 表头识别失败自动视觉兜底: 候选页渲染 → 视觉读表头列名 →
     锚点反查列模板 → 带模板重试 extract_statement; 全部失败抛回原错误。
 
     原则: 视觉只做"每文件一次"的高层判断(读表头列名), 列定位/边界精修/全量
     提取仍由规则管道(ground_header_anchors + build_columns_from_anchors +
-    refine_cols_with_data_x)完成。"""
+    refine_cols_with_data_x)完成。
+    2026-08-29: 成功后由锚点补全描述符并校验落缓存(同格式后续零视觉成本)。"""
     if PYODIDE:
         # H5 运行时无视觉能力: 直接抛回原错误走纯规则失败路径
         if original_error is not None:
@@ -2752,12 +2811,17 @@ def _vision_fallback_extract(doc, patterns, debug=False, password=None,
         _hy, _band, cols_raw, _band_bottom = grounded
         cols = build_columns_from_anchors(cols_raw)
         try:
-            return extract_statement(
+            res = extract_statement(
                 doc, patterns, debug=debug, columns_template=cols,
                 header_anchors=anchors)
         except RuntimeError as e2:
             log(f"[DEBUG] 视觉兜底: 第{pno+1}页模板提取失败: {e2}", debug)
             continue
+        # 2026-08-29: 兜底成功即补全并缓存描述符(经校验), 同格式后续请求
+        # 直接命中指纹缓存, 无需再调视觉。
+        _cache_descriptor_from_anchors(pdf_path, anchors, password, cache_dir,
+                                       doc_fp, force=cache_force, debug=debug)
+        return res[0], res[1], res[2]
     if original_error is not None:
         raise original_error
     raise RuntimeError("视觉兜底失败: 未能识别表头, 请人工检查 PDF 是否为对账单")
@@ -2897,20 +2961,15 @@ def _desc_anchors(desc):
 
 def _auto_onboard_retry(pdf_path, password, cache_dir, doc_fp, debug=False):
     """自动 onboarding(一次视觉成型): 优先 vision 读表头, 失败回退 heuristic。
-    成功: 写缓存描述符, 返回 (desc_path, desc, None); 全部失败: (None, None, err)。
+    返回 (desc_path, desc, None) 供调用方用描述符重试; 缓存由调用方在
+    重试提取成功后落盘(校验门禁, 防坏描述符进缓存), 全部失败: (None, None, err)。
     PYODIDE 模式: 无视觉环境且无文件系统, 直接放弃(纯规则路径失败即失败)。"""
     if PYODIDE:
         return None, None, "pyodide: no-vision/no-fs, auto-onboard disabled"
     if doc_fp:
-        cache_dir = cache_dir or os.path.join(
-            os.path.dirname(os.path.abspath(pdf_path)), "_descriptors")
-        desc_path = os.path.join(cache_dir, f"desc_{doc_fp}.json")
-        if os.path.exists(desc_path):
-            try:
-                with open(desc_path, encoding="utf-8") as f:
-                    return desc_path, json.load(f), None
-            except Exception:  # noqa: BLE001
-                pass
+        desc_path, cached = _cached_descriptor(pdf_path, cache_dir, doc_fp)
+        if cached is not None:
+            return desc_path, cached, None
     else:
         desc_path = None
     errors = []
@@ -2927,14 +2986,8 @@ def _auto_onboard_retry(pdf_path, password, cache_dir, doc_fp, debug=False):
                 pdf_path, password=password, mode=mode, debug=debug)
             if not desc or not desc.get("columns"):
                 raise RuntimeError("描述符无列模板")
-            if desc_path:
-                try:
-                    os.makedirs(os.path.dirname(desc_path), exist_ok=True)
-                    with open(desc_path, "w", encoding="utf-8") as f:
-                        json.dump(desc, f, ensure_ascii=False, indent=2)
-                except Exception:  # noqa: BLE001
-                    pass
-            log(f"[提示] 自动 onboarding({mode})成功, 描述符: {desc_path or '未缓存'}", debug)
+            log(f"[提示] 自动 onboarding({mode})成功, 待提取验证后"
+                f"缓存: {desc_path or '无指纹不缓存'}", debug)
             return desc_path, desc, None
         except Exception as e:  # noqa: BLE001
             errors.append(f"{mode}: {e}")
@@ -2968,6 +3021,16 @@ def _extract_general_with_escalation(doc, pdf_path, patterns, *,
             )
             if escalation is not None:
                 escalation["ok"] = True
+            # 校验门禁(2026-08-29): 描述符经真实提取成功后才落缓存 ——
+            # 防止视觉误读生成的坏描述符写进缓存, 污染后续同格式请求
+            # (服务端描述符缓存常驻, 门禁尤其重要)。
+            if desc_path and not os.path.exists(desc_path):
+                try:
+                    os.makedirs(os.path.dirname(desc_path), exist_ok=True)
+                    with open(desc_path, "w", encoding="utf-8") as f:
+                        json.dump(desc, f, ensure_ascii=False, indent=2)
+                except Exception:  # noqa: BLE001 (缓存写失败不影响本次成功)
+                    pass
             return res[0], res[1], res[2], {"onboarded": desc_path}
         except RuntimeError as e3:
             if escalation is not None:
@@ -2982,11 +3045,24 @@ def _extract_general_with_escalation(doc, pdf_path, patterns, *,
         return res[0], res[1], res[2], {}
     except RuntimeError as e:
         if vision_fallback and "未能自动识别表头行" in str(e):
+            # 2026-08-29: 先查描述符指纹缓存(此前兜底成功过 → 零视觉成本直取);
+            # 缓存重试失败(版式漂移等)则继续视觉兜底并强制刷新缓存。
+            _cp, _cd = _cached_descriptor(pdf_path, onboard_cache, doc_fp)
+            _force = False
+            if _cd is not None:
+                log("[提示] 命中描述符缓存, 跳过视觉兜底直接重试", debug)
+                try:
+                    return retry_with_desc(_cd, _cp)
+                except RuntimeError as _ce:
+                    _force = True
+                    log(f"[提示] 缓存描述符重试失败, 回退视觉兜底: {_ce}", debug)
             log("[提示] 表头自动识别失败, 启用视觉兜底...", debug)
             try:
                 res = _vision_fallback_extract(
                     doc, patterns, debug=debug, password=password,
-                    original_error=e)
+                    original_error=e, pdf_path=pdf_path,
+                    cache_dir=onboard_cache, doc_fp=doc_fp,
+                    cache_force=_force)
                 return res[0], res[1], res[2], {"fallback": "vision"}
             except RuntimeError as e2:
                 e = e2
@@ -3637,7 +3713,7 @@ def main():
                     action="store_const", const="none",
                     help="关闭一切视觉能力, 使用纯规则/文字层路径(等价 --vision-provider none)")
     ap.add_argument("--vision-provider", default="auto",
-                    choices=["auto", "visionjs", "model", "none"],
+                    choices=["auto", "visionjs", "model", "api", "none"],
                     help="视觉 provider: auto(外部 vision.js 可用则用, 否则自动关闭); "
                          "visionjs(默认外部 vision.js); model(原生多模态模型读图, "
                          "显式写待读图请求后退出码 3); none(无图像能力安全降级, "
