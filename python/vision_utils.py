@@ -47,7 +47,7 @@ MODEL_VISION_DIR_VAR = "BANK_PDF_MODEL_VISION_DIR"
 #   BANK_PDF_VISION_PROVIDER=api
 #   BANK_PDF_VISION_API_BASE  如 https://open.bigmodel.cn/api/paas/v4 (不带 /chat/completions)
 #   BANK_PDF_VISION_API_KEY   API Key
-#   BANK_PDF_VISION_API_MODEL 模型名(默认 glm-4v-flash)
+#   BANK_PDF_VISION_API_MODEL 模型名(默认 glm-4.6v)
 VISION_API_BASE_VAR = "BANK_PDF_VISION_API_BASE"
 VISION_API_KEY_VAR = "BANK_PDF_VISION_API_KEY"
 VISION_API_MODEL_VAR = "BANK_PDF_VISION_API_MODEL"
@@ -57,7 +57,7 @@ def _api_config():
     """读取 api provider 配置, 返回 (base, key, model)。绝不打印 key。"""
     base = os.environ.get(VISION_API_BASE_VAR, "").strip().rstrip("/")
     key = os.environ.get(VISION_API_KEY_VAR, "").strip()
-    model = os.environ.get(VISION_API_MODEL_VAR, "glm-4v-flash").strip()
+    model = os.environ.get(VISION_API_MODEL_VAR, "glm-4.6v").strip()
     return base, key, model
 
 

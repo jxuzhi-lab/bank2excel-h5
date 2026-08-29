@@ -16,7 +16,7 @@ services:
       # - BANK_PDF_VISION_PROVIDER=api
       # - BANK_PDF_VISION_API_BASE=https://open.bigmodel.cn/api/paas/v4
       # - BANK_PDF_VISION_API_KEY=sk-xxxxxxxx
-      # - BANK_PDF_VISION_API_MODEL=glm-4v-flash
+      # - BANK_PDF_VISION_API_MODEL=glm-4.6v
       # ---- 成本/并发控制(可省略, 括号内为默认值) ----
       # - VLM_BUDGET_PER_HOUR=40      # 每小时视觉调用预算(超限自动降级纯规则)
       # - RATE_LIMIT_PER_MIN=12       # 每 IP 每分钟转换请求数

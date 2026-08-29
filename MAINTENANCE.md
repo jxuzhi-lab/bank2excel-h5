@@ -165,12 +165,12 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 - BANK_PDF_VISION_PROVIDER=api
 - BANK_PDF_VISION_API_BASE=https://open.bigmodel.cn/api/paas/v4   # 或其它 OpenAI 兼容端点
 - BANK_PDF_VISION_API_KEY=sk-xxx
-# 可选: BANK_PDF_VISION_API_MODEL(默认 glm-4v-flash)
+# 可选: BANK_PDF_VISION_API_MODEL(默认 glm-4.6v)
 ```
 
 **成本/安全控制**（server.py，env 可调）：`VLM_BUDGET_PER_HOUR=40`（超限自动降级纯规则，包装在 call_vision_raw 唯一出口）/ `RATE_LIMIT_PER_MIN=12`（每 IP）/ `MAX_CONCURRENT=2`。**隐私**：文件转换完即删；仅视觉启用且规则失败时，第 1 页渲染图才发给所配 VLM；描述符只含列模板不含数据。
 
-**VPS 端已启用**（2026-08-29）：智谱 key 已配置在 **VPS 本地** `/opt/bank2excel-h5/docker-compose.yml`（model=glm-4v-flash, 预算 40 次/时），**仓库里的 compose 只留占位注释, key 不入 git**。启用后线上已实测：未知格式合成 PDF → glm-4v-flash 读表头 → 转换成功（3.4s）→ 描述符入卷缓存 → 二次请求命中缓存零视觉成本（1.6s）。
+**VPS 端已启用**（2026-08-29）：智谱 key 已配置在 **VPS 本地** `/opt/bank2excel-h5/docker-compose.yml`（model=glm-4.6v, 预算 40 次/时），**仓库里的 compose 只留占位注释, key 不入 git**。启用后线上已实测：未知格式合成 PDF → glm-4.6v 读表头 → 转换成功（3.4s）→ 描述符入卷缓存 → 二次请求命中缓存零视觉成本（1.6s）。
 
 **运维坑（已修, 记录防回退）**：`./descriptors` 卷目录若被 Docker 首次自动创建会归 root 所有, 容器内 `app` 用户(uid 1000)写不进（报 Permission denied, 转换仍成功但不缓存）。修复：`sudo chown -R 1000:1000 /opt/bank2excel-h5/descriptors`。
 
