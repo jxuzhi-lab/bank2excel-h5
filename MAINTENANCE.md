@@ -201,6 +201,8 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 - **缓解路径明确**：截断可检测（闭合标签+completion 阈值）→ 失败页回退 RapidOCR 夹心层。推荐架构：**GLM-OCR 主路径（含逐页校验）+ 夹心层兜底 + md→记录转换层**（HTML 表格解析已验证可行）。
 - 运维注意：并发 4 会触发限流（部分页失败需补跑）, 客户端要限速; 全实验含重试共耗 ~21 万 token ≈ 0.034 元。
 
+**百度智能云表格识别对比实测（2026-08-30, 未集成, 与 GLM-OCR 同样本对垒）**：接口 `POST /rest/2.0/ocr/v1/table?access_token=`（OAuth client_credentials 取 token, 表单 form 传 base64 image, 免费档 QPS≈2 需客户端节流）。返回**单元格级网格**（row/col 索引 + cell_location 坐标 + words）。民生 20 页：**401/401 行零丢失、借/贷/余额三值 401/401 全对、零截断零失败, 59s（QPS 节流下）**；北京 3 页 58/58 全对。已知瑕疵：竖排表头词被网格合并（"交易时间 摘要"成一列）→ 行列数 8/9/10 参差, 集成需列重排层；个别行余额并入流水号格（值仍在, 可被余额链校正）；11 条长截断摘要边缘字数差。对比结论：**数据质量三方案最优**（RapidOCR 夹心层列错位污染 / GLM-OCR 确定性截断丢行 / 百度表格全对）, 且单元格级坐标支持"cell 级夹心"集成路线。限制：体验额度 1000 次（约 50 份 20 页账单）, 过后按次计费（表格识别约 0.05 元/次 = 0.0025 元/页, 为 GLM-OCR 的 ~3 倍）。
+
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
