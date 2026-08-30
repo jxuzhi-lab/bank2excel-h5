@@ -603,7 +603,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <h3>队列与刷新</h3>
   <p>队列自动保存在本机浏览器（IndexedDB）, 刷新页面不丢失: 待转换的文件、密码、失败原因、已完成的结果都会恢复, 可重新下载。点每行 ✕ 可单独移除。</p>
   <h3>失败怎么办</h3>
-  <p>失败的文件会显示原因和建议。若是新格式识别失败, 点"下载诊断包"（脱敏 JSON, 不含真实数据）发给维护者, 下个版本即可支持。</p>
+  <p>失败的文件会显示原因和建议, 可点"重试"重新转换; 网络中断类失败会自动重试一次。若是新格式识别失败, 点"下载诊断包"（脱敏 JSON, 不含真实数据）发给维护者, 下个版本即可支持。</p>
+  <p style="margin-top:6px">在微信/企业微信内置浏览器里转换大文件可能不稳定（易报网络错误）, 遇到时建议复制链接用系统浏览器（如 Chrome）打开。</p>
   <div class="hl">__PRIVACY_NOTE__</div>
 </div></div>
 <script>
@@ -675,8 +676,9 @@ function render(){
     let actions='';
     if(it.status==='ok'&&it.blobUrl)
       actions='<button class="linkbtn" data-dl="'+i+'">下载 xlsx</button>';
-    if(it.status==='fail'&&it.detail&&it.detail.diag)
-      actions='<button class="linkbtn" data-diag="'+i+'">下载诊断包</button>';
+    if(it.status==='fail')
+      actions='<button class="linkbtn" data-retry="'+i+'">重试</button>'+
+        (it.detail&&it.detail.diag?'<button class="linkbtn" data-diag="'+i+'">下载诊断包</button>':'');
     const lock=it.pwd?'🔒':'';
     d.innerHTML='<div class="ficon">PDF</div><div class="fmeta"><div class="fname">'+
       escapeHtml(it.file.name)+' '+lock+'</div><div class="fmsg '+(it.status==='fail'?'err':it.status==='ok'?'ok':'')+'">'+
@@ -693,6 +695,11 @@ function render(){
   queueEl.querySelectorAll('[data-pwd]').forEach(inp=>inp.oninput=e=>{items[+e.target.dataset.pwd].pwd=e.target.value;persist()});
   queueEl.querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>doDownload(items[+b.dataset.dl]));
   queueEl.querySelectorAll('[data-diag]').forEach(b=>b.onclick=()=>doDiag(items[+b.dataset.diag]));
+  queueEl.querySelectorAll('[data-retry]').forEach(b=>b.onclick=()=>{
+    const it=items[+b.dataset.retry];
+    it.status='pending';it.msg=null;it._retried=false;persist();render();
+    if(!running)startAll();
+  });
   queueEl.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>removeAt(+b.dataset.del));
 }
 function removeAt(i){
@@ -745,11 +752,20 @@ async function convertOne(it){
         (ocr?' · OCR '+ocr+' 页':'')+(warn?' · '+warn:'');
       doDownload(it);
     }
-  }catch(e){it.status='fail';it.detail={message:e.message};it.msg='网络错误: '+e.message}
+  }catch(e){
+    // 网络层错误(连接被重置/中断, 常见于手机内置浏览器): 自动重试一次
+    const netErr=(e instanceof TypeError)||/fetch|network|Failed|abort/i.test(e.message||'');
+    if(!it._retried&&netErr){
+      it._retried=true;it.status='pending';it.msg='网络中断, 5 秒后自动重试…';
+      render();await new Promise(r=>setTimeout(r,5000));
+      return convertOne(it);
+    }
+    it.status='fail';it.detail={message:e.message};it.msg='网络错误: '+e.message;
+  }
   persist();render();
 }
 async function startAll(){
-  running=true;render();
+  running=true;items.forEach(x=>{if(x.status==='pending')x._retried=false});render();
   let it;
   while((it=items.find(x=>x.status==='pending'))){
     await convertOne(it);
