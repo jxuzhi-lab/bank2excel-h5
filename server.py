@@ -30,7 +30,7 @@ import tempfile
 import threading
 import time
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
 from fastapi.responses import HTMLResponse, Response  # noqa: E402
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -157,7 +157,8 @@ def health():
 
 
 @app.post("/api/convert")
-def convert(request: Request, file: UploadFile = File(...), password: str = ""):
+def convert(request: Request, file: UploadFile = File(...),
+            password: str = Form("")):  # Form() 必须显式声明, 否则被解析为 query 参数(踩坑)
     client_ip = request.client.host if request.client else ""
     if _rate_limited(client_ip):
         raise HTTPException(429, detail="请求过于频繁, 请稍后再试")
