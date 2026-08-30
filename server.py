@@ -289,72 +289,167 @@ PRIVACY_NOTE = {
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>对账单 PDF→Excel · 私有服务</title>
+<title>对账单 PDF → Excel · 私有转换</title>
 <style>
-  body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#f6f8fa;margin:0;color:#1f2328}
-  .wrap{max-width:640px;margin:0 auto;padding:24px 16px}
-  h1{font-size:20px}#drop{border:2px dashed #b6c2cf;border-radius:12px;background:#fff;padding:36px 16px;text-align:center;margin-top:16px}
-  #drop.over{border-color:#1a73e8;background:#f0f6ff}.btn{background:#1a73e8;color:#fff;border:0;padding:11px 26px;border-radius:8px;font-size:16px;cursor:pointer}
-  .muted{color:#57606a;font-size:13px;margin-top:8px}
-  #status{margin-top:14px;font-size:14px}#status .err{color:#d32f2f}
-  .stat,.erbox{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-top:12px;font-size:14px}
-  .erbox{border-color:#f1b8b4;background:#fff5f5}
-  pre{white-space:pre-wrap;font-size:12px;color:#57606a}
-  .ok{color:#1a8a2e;font-weight:600}
-  .linkbtn{background:none;border:none;color:#1a73e8;cursor:pointer;font-size:13px;padding:0;text-decoration:underline}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f3f5f9;margin:0;color:#1f2328;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:28px 16px 48px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#6b7280;font-size:13px;line-height:1.7;margin-bottom:20px}
+  .card{background:#fff;border:1px solid #e7eaf0;border-radius:14px;box-shadow:0 1px 3px rgba(16,24,40,.05);padding:20px;margin-bottom:14px}
+  #drop{border:2px dashed #c3cdda;border-radius:12px;padding:30px 16px;text-align:center;cursor:pointer;transition:all .15s}
+  #drop:hover{border-color:#1a73e8;background:#f5f9ff}
+  #drop.over{border-color:#1a73e8;background:#eef5ff;transform:scale(1.01)}
+  #drop .big{font-size:16px;font-weight:600;margin-bottom:6px}
+  #drop .hint{color:#8a94a6;font-size:13px}
+  .field{margin-top:14px}
+  .field label{display:block;font-size:13px;color:#57606a;margin-bottom:6px;font-weight:600}
+  .field input{width:100%;border:1px solid #d5dbe3;border-radius:8px;padding:9px 12px;font-size:14px;outline:none;transition:border .15s}
+  .field input:focus{border-color:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.12)}
+  .field .note{color:#98a2b3;font-size:12px;margin-top:5px}
+  .queue{margin-top:4px}
+  .item{display:flex;align-items:center;gap:12px;padding:11px 4px;border-bottom:1px solid #f0f2f6;font-size:13px}
+  .item:last-child{border-bottom:0}
+  .ficon{width:34px;height:34px;border-radius:8px;background:#eef3fb;color:#1a73e8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0}
+  .fmeta{flex:1;min-width:0}
+  .fname{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fmsg{color:#8a94a6;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fmsg.err{color:#d92d20}
+  .fmsg.ok{color:#12805c}
+  .badge{flex-shrink:0;font-size:12px;padding:3px 10px;border-radius:999px;background:#f2f4f7;color:#667085;font-weight:600}
+  .badge.run{background:#e5f0ff;color:#1a73e8}
+  .badge.ok{background:#e6f6ef;color:#12805c}
+  .badge.fail{background:#fdecea;color:#d92d20}
+  .btn{background:#1a73e8;color:#fff;border:0;padding:10px 22px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
+  .btn:hover{background:#1662c6}
+  .btn:disabled{background:#c2d6f2;cursor:not-allowed}
+  .btn.ghost{background:#fff;color:#344054;border:1px solid #d5dbe3}
+  .btn.ghost:hover{background:#f6f8fb}
+  .linkbtn{background:none;border:none;color:#1a73e8;cursor:pointer;font-size:12.5px;padding:0;text-decoration:underline;flex-shrink:0}
+  .bar{display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:10px}
+  .progress{color:#667085;font-size:13px}
+  .empty{color:#98a2b3;font-size:13px;text-align:center;padding:14px 0 4px}
+  .err-detail{background:#fff8f7;border:1px solid #f4d3cf;border-radius:8px;padding:9px 11px;margin-top:7px;font-size:12.5px;color:#7a271a;line-height:1.6}
 </style></head><body><div class="wrap">
-<h1>银行对账单 PDF → Excel</h1>
-<p class="muted">私有转换服务 · 文件转换完即删 · __PRIVACY_NOTE__</p>
-<div id="drop">
-  <div style="font-size:16px">点选或拖入对账单 PDF</div>
-  <div style="margin-top:12px"><button class="btn" onclick="document.getElementById('f').click()">选择 PDF</button></div>
-  <input type="file" id="f" accept=".pdf" hidden>
-  <div class="muted">单个文件 ≤ 200MB · 加密 PDF 可附 ?password=</div>
+<h1>对账单 PDF → Excel</h1>
+<div class="sub">私有转换服务 · 文件转换完即删 · __PRIVACY_NOTE__</div>
+<div class="card">
+  <div id="drop">
+    <div class="big">点选或拖入对账单 PDF（可多选）</div>
+    <div class="hint">加入队列后统一开始转换 · 单个文件 ≤ 200MB</div>
+  </div>
+  <input type="file" id="f" accept=".pdf" multiple hidden>
+  <div class="field">
+    <label>PDF 打开密码（可选）</label>
+    <input type="text" id="pwd" placeholder="加密 PDF（如华夏银行）的打开密码, 对本批全部文件生效">
+    <div class="note">不加密的文件无需填写; 密码仅用于本次转换, 不做任何存储</div>
+  </div>
 </div>
-<div id="status"></div>
+<div class="card">
+  <div class="queue" id="queue"><div class="empty">队列为空 — 先添加文件</div></div>
+  <div class="bar">
+    <div class="progress" id="prog"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="clear" disabled>清空</button>
+      <button class="btn" id="start" disabled>开始转换</button>
+    </div>
+  </div>
+</div>
 <script>
-const f=document.getElementById('f'),drop=document.getElementById('drop'),st=document.getElementById('status');
-['dragover','dragenter'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.add('over')}));
-['dragleave','drop'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.remove('over')}));
-drop.addEventListener('drop',e=>{if(e.dataTransfer.files.length)go(e.dataTransfer.files[0])});
-f.addEventListener('change',()=>{if(f.files.length)go(f.files[0])});
-function showErr(d){
-  const box=document.createElement('div');box.className='erbox';
-  let h='<div class="err">❌ '+(d.message||'转换失败')+'</div>';
-  if(d.stage)h+='<div class="muted">失败阶段: '+d.stage+'</div>';
-  if(d.suggestion)h+='<div class="muted">建议: '+d.suggestion+'</div>';
-  if(d.diag){
-    h+='<button class="linkbtn" id="dl">下载诊断包(JSON, 发给维护者可加快适配)</button>';
-    box.innerHTML=h;
-    box.querySelector('#dl').addEventListener('click',()=>{
-      const blob=new Blob([JSON.stringify(d.diag,null,1)],{type:'application/json'});
-      const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-      a.download='bank2excel-diagnosis-'+Date.now()+'.json';a.click();
-      setTimeout(()=>URL.revokeObjectURL(a.href),30000);
-    });
-  }else{box.innerHTML=h}
-  st.innerHTML='';st.appendChild(box);
+const drop=document.getElementById('drop'),f=document.getElementById('f'),pwd=document.getElementById('pwd'),
+      queueEl=document.getElementById('queue'),prog=document.getElementById('prog'),
+      startBtn=document.getElementById('start'),clearBtn=document.getElementById('clear');
+let items=[];  // {file, status: pending|run|ok|fail, msg, blobUrl, detail}
+function fmtSize(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,n/1024).toFixed(0)+' KB'}
+function render(){
+  queueEl.innerHTML = items.length ? '' : '<div class="empty">队列为空 — 先添加文件</div>';
+  items.forEach((it,i)=>{
+    const d=document.createElement('div');d.className='item';
+    const badge={pending:'等待',run:'转换中',ok:'完成',fail:'失败'}[it.status];
+    let msg=it.msg||fmtSize(it.file.size);
+    let actions='';
+    if(it.status==='ok'&&it.blobUrl)
+      actions='<button class="linkbtn" data-dl="'+i+'">下载 xlsx</button>';
+    if(it.status==='fail'&&it.detail&&it.detail.diag)
+      actions='<button class="linkbtn" data-diag="'+i+'">下载诊断包</button>';
+    d.innerHTML='<div class="ficon">PDF</div><div class="fmeta"><div class="fname">'+
+      escapeHtml(it.file.name)+'</div><div class="fmsg '+(it.status==='fail'?'err':it.status==='ok'?'ok':'')+'">'+
+      escapeHtml(msg)+'</div>'+(it.status==='fail'&&it.detail&&it.detail.suggestion?'<div class="err-detail">建议: '+escapeHtml(it.detail.suggestion)+'</div>':'')+
+      '</div><span class="badge '+it.status+'">'+badge+'</span>'+(actions||'');
+    queueEl.appendChild(d);
+  });
+  const done=items.filter(x=>x.status==='ok'||x.status==='fail').length;
+  const running=items.some(x=>x.status==='run');
+  prog.textContent=items.length?('进度 '+done+' / '+items.length):'';
+  startBtn.disabled=!items.some(x=>x.status==='pending')||running;
+  clearBtn.disabled=!items.length||running;
+  queueEl.querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>doDownload(items[+b.dataset.dl]));
+  queueEl.querySelectorAll('[data-diag]').forEach(b=>b.onclick=()=>doDiag(items[+b.dataset.diag]));
 }
-async function go(file){
-  st.innerHTML='⏳ 上传并转换中...';
-  const fd=new FormData();fd.append('file',file);
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function addFiles(files){
+  for(const f of files){
+    if(!/\.pdf$/i.test(f.name)){continue}
+    if(items.some(x=>x.file.name===f.name&&x.file.size===f.size))continue;
+    items.push({file:f,status:'pending',msg:null,blobUrl:null,detail:null});
+  }
+  render();
+}
+function doDownload(it){
+  const a=document.createElement('a');a.href=it.blobUrl;
+  a.download=it.file.name.replace(/\.pdf$/i,'')+'.xlsx';a.click();
+}
+function doDiag(it){
+  const blob=new Blob([JSON.stringify(it.detail.diag,null,1)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='bank2excel-diagnosis-'+Date.now()+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),30000);
+}
+async function convertOne(it){
+  it.status='run';it.msg=null;render();
+  const fd=new FormData();fd.append('file',it.file);fd.append('password',pwd.value);
   const t0=performance.now();
   try{
     const r=await fetch('/api/convert',{method:'POST',body:fd});
     if(!r.ok){
       const j=await r.json().catch(()=>({}));
-      const d=(j.detail&&typeof j.detail==='object')?j.detail:{message:(j.detail||('HTTP '+r.status))};
-      showErr(d);return;
+      it.status='fail';
+      it.detail=(j.detail&&typeof j.detail==='object')?j.detail:{message:String(j.detail||('HTTP '+r.status))};
+      it.msg=it.detail.message||('HTTP '+r.status);
+    }else{
+      const blob=await r.blob();
+      it.blobUrl=URL.createObjectURL(blob);
+      it.status='ok';
+      const ocr=r.headers.get('X-OCR-Pages'),warn=r.headers.get('X-OCR-Warning');
+      it.msg=fmtSize(blob.size)+' · '+(Math.round(performance.now()-t0)/1000)+'s'+
+        (ocr?' · OCR '+ocr+' 页':'')+(warn?' · '+warn:'');
+      doDownload(it);
     }
-    const blob=await r.blob();
-    const name=file.name.replace(/\.pdf$/i,'')+'.xlsx';
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),30000);
-    const mb=(blob.size/1048576).toFixed(2);
-    st.innerHTML=`<div class="stat"><span class="ok">✅ 转换成功</span><br>${name} (${mb}MB) · 耗时 ${Math.round(performance.now()-t0)/1000}s<br>文件已开始下载。</div>`;
-  }catch(e){st.innerHTML=`<div class="err">❌ 网络错误: ${e.message}</div>`}
+  }catch(e){it.status='fail';it.detail={message:e.message};it.msg='网络错误: '+e.message}
+  render();
 }
-</script></div></body></html"""
+async function startAll(){
+  const pend=items.filter(x=>x.status==='pending');
+  const workers=new Array(Math.min(2,pend.length)).fill(0).map(async()=>{
+    while(true){
+      const it=pend.shift();if(!it)break;
+      await convertOne(it);
+    }
+  });
+  await Promise.all(workers);
+}
+drop.onclick=()=>f.click();
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>{if(e.dataTransfer.files.length)addFiles(e.dataTransfer.files)});
+f.addEventListener('change',()=>{addFiles(f.files);f.value=''});
+startBtn.onclick=startAll;
+clearBtn.onclick=()=>{
+  items.forEach(x=>{if(x.blobUrl)URL.revokeObjectURL(x.blobUrl)});
+  items=[];render();
+};
+render();
+</script></div></body></html>"""
 
 
 def main():
