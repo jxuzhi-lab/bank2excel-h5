@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import threading
+import uuid
 import time
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
@@ -161,125 +162,21 @@ def health():
 @app.post("/api/convert")
 def convert(request: Request, file: UploadFile = File(...),
             password: str = Form("")):  # Form() 必须显式声明, 否则被解析为 query 参数(踩坑)
-    client_ip = request.client.host if request.client else ""
-    if _rate_limited(client_ip):
+    if _rate_limited(request.client.host if request.client else ""):
         raise HTTPException(429, detail="请求过于频繁, 请稍后再试")
     data = file.file.read()
     if len(data) > MAX_MB * 1024 * 1024:
         raise HTTPException(400, f"文件超过 {MAX_MB}MB 上限")
     if not data:
         raise HTTPException(400, "空文件")
+    t0, usage = time.time(), {}
+    stage, err_msg, rows = None, None, None
     if not _convert_sem.acquire(timeout=120):
         raise HTTPException(503, detail="当前转换并发已满, 请稍后重试")
-    t0, usage, ocr_mode, ocr_pages, glm_direct = time.time(), {}, "", 0, False
-    stage, err_msg, rows = None, None, None
     try:
-        with tempfile.TemporaryDirectory(prefix="b2x_") as td:
-            pdf_path = os.path.join(td, "input.pdf")
-            out_path = os.path.join(td, "out.xlsx")
-            with open(pdf_path, "wb") as f:
-                f.write(data)
-            # 扫描件 OCR(2026-08-30): 含无文字层的页时:
-            #   GLM-OCR 主路径(glm_ocr.py): 逐页识别+退化自愈(截断页递归拆分
-            #   重试+完整行抢救)。全部页有效 → 直接经引擎写出链产出 xlsx
-            #   (无水印污染, 表头结构准确); 抢救过的页附余额链断点警告头。
-            #   硬失败页(重试后仍无数据) → 422 结构化错误(宁缺勿错)。
-            #   未配 GLM_OCR_KEY → 整体回退 RapidOCR 夹心层(ocr_layer.py, v1)。
-            # 对纯文字层 PDF 零开销。
-            glm_direct = False
-            ocr_warning = ""
-            convert_src, ocr_pages, ocr_mode = pdf_path, 0, ""
-            if OCR_ENABLED:
-                try:
-                    _doc = ocr_layer.pymupdf.open(pdf_path)
-                    try:
-                        _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
-                        _n_pages = len(_doc)
-                    finally:
-                        # 加密文件 needs_ocr 会抛异常, close 必须兜底
-                        # (Windows 句柄不释放会让临时目录清理失败→500, 踩坑)
-                        _doc.close()
-                    if _need:
-                        glm = None
-                        if glm_ocr.get_key():
-                            try:
-                                glm = glm_ocr.parse_scanned_pdf(pdf_path, _n_pages, usage=usage)
-                            except Exception as ge:  # noqa: BLE001
-                                print(f"[提示] GLM-OCR 异常, 转夹心层: {ge}", flush=True)
-                                glm = None
-                        if glm is not None:
-                            bad_idx = [p["index"] + 1 for p in glm["pages"]
-                                       if p["hard_fail"]]
-                            if glm["errors"]:
-                                print(f"[提示] GLM-OCR: {glm['errors']}", flush=True)
-                            if bad_idx:
-                                raise HTTPException(
-                                    422, detail={
-                                        "message":
-                                            f"第 {bad_idx} 页 OCR 识别失败(重试后仍无有效"
-                                            "数据), 为保证数据完整未输出结果",
-                                        "stage": "ocr",
-                                        "suggestion": "请重试一次; 若持续失败请导出诊断反馈",
-                                        "fail_pages": bad_idx})
-                            # 余额链断点驱动的定向重试(跨轮非确定性可恢复静默漏行);
-                            # 仍断则升级百度表格识别兜底(仅断点页)
-                            glm["pages"], gaps, baidu_pgs = glm_ocr.refine_gaps(
-                                pdf_path, glm["pages"], debug=True, usage=usage)
-                            _hdr, _recs, _meta = glm_ocr.build_engine_records(glm["pages"])
-                            _write_glm_xlsx(_hdr, _recs, out_path)
-                            glm_direct = True
-                            ocr_pages = _n_pages
-                            ocr_mode = ("glm-ocr+baidu" if baidu_pgs else "glm-ocr")
-                            salv = [p["index"] + 1 for p in glm["pages"]
-                                    if p["salvaged"] and p.get("source") != "baidu"]
-                            if salv or gaps or baidu_pgs:
-                                parts = []
-                                if salv:
-                                    parts.append(f"第 {salv} 页识别曾截断已抢救")
-                                if baidu_pgs:
-                                    parts.append(f"第 {baidu_pgs} 页已由表格识别兜底重做")
-                                parts.append(
-                                    f"余额链断点行: {gaps[:8]} — 请核对断点处是否遗漏记录"
-                                    if gaps else "余额链完整")
-                                ocr_warning = "; ".join(parts)
-                        if not glm_direct:
-                            scan_pdf = os.path.join(td, "scan_sandwich.pdf")
-                            ocr_pages, _total, _secs = ocr_layer.build_text_layer(
-                                pdf_path, scan_pdf)
-                            if ocr_pages:
-                                convert_src = scan_pdf
-                                ocr_mode = ocr_mode or "ocr-sandwich"
-                except HTTPException as he:
-                    if isinstance(he.detail, dict):
-                        stage = he.detail.get("stage")
-                        err_msg = he.detail.get("message") or str(he.detail)[:200]
-                    raise
-                except Exception as oe:  # noqa: BLE001 (OCR 失败按原样走引擎报扫描件错误)
-                    ocr_pages = -1
-                    ocr_mode = f"error: {oe}"
-                    err_msg = f"OCR 预处理失败: {oe}"
-                    print(f"[提示] OCR 预处理失败: {oe}", flush=True)
-            if not glm_direct:
-                try:
-                    r = eng.convert_pdf(
-                        convert_src, out_path=out_path, sheet="对账单",
-                        password=password or None,
-                        quick_classify=True, diag=True,
-                        onboard_cache=DESC_CACHE_DIR,
-                    )
-                    try:
-                        rows = r[1].get("rows")
-                    except Exception:  # noqa: BLE001
-                        rows = None
-                except HTTPException as he:
-                    if isinstance(he.detail, dict):
-                        stage = he.detail.get("stage") or stage
-                        err_msg = he.detail.get("message") or str(he.detail)[:200]
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    raise HTTPException(422, detail=_diag_payload(out_path, e))
-            with open(out_path, "rb") as f:
-                xlsx = f.read()
+        xlsx_bytes, res = _do_convert(data, password, usage)
+        ocr_mode, ocr_pages, rows = res["ocr_mode"], res["ocr_pages"], res["rows"]
+        stage = "ok"
     except HTTPException as he:
         if isinstance(he.detail, dict):
             stage = he.detail.get("stage") or stage
@@ -307,92 +204,266 @@ def convert(request: Request, file: UploadFile = File(...),
     out_name = os.path.splitext(file.filename or "对账单")[0] + ".xlsx"
     # 中文文件名: RFC 5987 编码(Header 必须 latin-1 可表示)
     from urllib.parse import quote
-    cd = f"attachment; filename*=UTF-8''{quote(out_name)}"
+    cd = "attachment; filename*=UTF-8''" + quote(out_name)
     resp_headers = {"Content-Disposition": cd}
     if ocr_pages:
-        resp_headers["X-OCR-Pages"] = str(ocr_pages)  # 负数=OCR 失败仍由规则路径拒绝
+        resp_headers["X-OCR-Pages"] = str(ocr_pages)
         if ocr_mode:
             resp_headers["X-OCR-Mode"] = ocr_mode
-        if ocr_warning:
-            from urllib.parse import quote as _q
-            resp_headers["X-OCR-Warning"] = _q(ocr_warning)
+        if res.get("warning"):
+            resp_headers["X-OCR-Warning"] = quote(res["warning"])
+    return Response(content=xlsx_bytes, media_type="application/vnd"
+                    ".openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers=resp_headers)
+
+
+def _do_convert(data, password, usage):
+    """共享转换核心(同步接口与异步任务队列共用): 落盘→OCR 分支→引擎→读出 xlsx。
+    返回 (xlsx_bytes, {"ocr_mode","ocr_pages","rows","warning"});
+    失败抛 HTTPException(带 stage/suggestion 结构化 detail)。"""
+    ocr_mode, ocr_pages, glm_direct = "", 0, False
+    ocr_warning = ""
+    rows = None
+    stage = err_msg = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="b2x_") as td:
+            pdf_path = os.path.join(td, "input.pdf")
+            out_path = os.path.join(td, "out.xlsx")
+            with open(pdf_path, "wb") as f:
+                f.write(data)
+            # 扫描件 OCR: GLM-OCR 主路径(退化自愈) → 百度定向兜底 → 夹心层保底
+            glm_direct = False
+            if OCR_ENABLED:
+                try:
+                    _doc = ocr_layer.pymupdf.open(pdf_path)
+                    try:
+                        _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
+                        _n_pages = len(_doc)
+                    finally:
+                        # 加密文件 needs_ocr 会抛异常, close 必须兜底
+                        # (Windows 句柄不释放会让临时目录清理失败→500, 踩坑)
+                        _doc.close()
+                    if _need:
+                        glm = None
+                        if glm_ocr.get_key():
+                            try:
+                                glm = glm_ocr.parse_scanned_pdf(
+                                    pdf_path, _n_pages, usage=usage)
+                            except Exception as ge:  # noqa: BLE001
+                                print(f"[提示] GLM-OCR 异常, 转夹心层: {ge}", flush=True)
+                                glm = None
+                        if glm is not None:
+                            bad_idx = [p["index"] + 1 for p in glm["pages"]
+                                       if p["hard_fail"]]
+                            if glm["errors"]:
+                                print(f"[提示] GLM-OCR: {glm['errors']}", flush=True)
+                            if bad_idx:
+                                raise HTTPException(
+                                    422, detail={
+                                        "message":
+                                            f"第 {bad_idx} 页 OCR 识别失败(重试后仍无有效"
+                                            "数据), 为保证数据完整未输出结果",
+                                        "stage": "ocr",
+                                        "suggestion": "请重试一次; 若持续失败请导出诊断反馈",
+                                        "fail_pages": bad_idx})
+                            glm["pages"], gaps = glm_ocr.refine_gaps(
+                                pdf_path, glm["pages"], debug=True, usage=usage)
+                            _hdr, _recs, _meta = glm_ocr.build_engine_records(glm["pages"])
+                            rows = len(_recs)
+                            _write_glm_xlsx(_hdr, _recs, out_path)
+                            glm_direct = True
+                            ocr_pages = _n_pages
+                            ocr_mode = ("glm-ocr+baidu"
+                                        if any(p.get("source") == "baidu"
+                                               for p in glm["pages"]) else "glm-ocr")
+                            salv = [p["index"] + 1 for p in glm["pages"]
+                                    if p["salvaged"] and p.get("source") != "baidu"]
+                            if salv or gaps:
+                                parts = []
+                                if salv:
+                                    parts.append(f"第 {salv} 页识别曾截断已抢救")
+                                parts.append(
+                                    f"余额链断点行: {gaps[:8]} — 请核对断点处是否遗漏记录"
+                                    if gaps else "余额链完整")
+                                ocr_warning = "; ".join(parts)
+                        if not glm_direct:
+                            scan_pdf = os.path.join(td, "scan_sandwich.pdf")
+                            ocr_pages, _total, _secs = ocr_layer.build_text_layer(
+                                pdf_path, scan_pdf)
+                            if ocr_pages:
+                                pdf_path = scan_pdf
+                                ocr_mode = "ocr-sandwich"
+                except HTTPException:
+                    raise
+                except Exception as oe:  # noqa: BLE001 (OCR 失败按原样走引擎报扫描件错误)
+                    ocr_pages = -1
+                    ocr_mode = f"error: {oe}"
+                    err_msg = f"OCR 预处理失败: {oe}"
+                    print(f"[提示] OCR 预处理失败: {oe}", flush=True)
+            try:
+                r = eng.convert_pdf(
+                    pdf_path, out_path=out_path, sheet="对账单",
+                    password=password or None,
+                    quick_classify=True, diag=True,
+                    onboard_cache=DESC_CACHE_DIR,
+                )
+                try:
+                    rows = r[1].get("rows")
+                except Exception:  # noqa: BLE001
+                    rows = None
+            except HTTPException as he:
+                if isinstance(he.detail, dict):
+                    stage = he.detail.get("stage") or stage
+                    err_msg = he.detail.get("message") or str(he.detail)[:200]
+                raise
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(422, detail=_diag_payload(out_path, e))
+            with open(out_path, "rb") as f:
+                xlsx_bytes = f.read()
+        return xlsx_bytes, {"ocr_mode": ocr_mode, "ocr_pages": ocr_pages,
+                            "rows": rows, "warning": ocr_warning}
+    except HTTPException as he:
+        if isinstance(he.detail, dict):
+            stage = he.detail.get("stage") or stage
+            err_msg = he.detail.get("message") or str(he.detail)[:200]
+        raise
+    except Exception as e:  # noqa: BLE001
+        stage, err_msg = stage or "error", str(e)[:200]
+        raise HTTPException(422, detail={"message": err_msg, "stage": stage})
+
+
+# ---- 异步任务队列(移动端友好): 提交即返回 task_id, 轮询取结果 ----
+# 上传后连接断开/切后台不影响服务端继续转换, 规避手机浏览器杀连接问题。
+TASKS = {}
+_tasks_lock = threading.Lock()
+_RESULTS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "_task_results")
+os.makedirs(_RESULTS_DIR, exist_ok=True)
+
+
+def _task_worker(tid, data, filename, password, usage):
+    t0 = time.time()
+    with _tasks_lock:
+        TASKS[tid]["status"] = "running"
+    stage = err_msg = rows = None
+    ocr_mode, ocr_pages = "", 0
+    try:
+        if not _convert_sem.acquire(timeout=300):
+            raise HTTPException(503, detail="当前转换并发已满")
+        try:
+            with tempfile.TemporaryDirectory(prefix="b2x_") as td:
+                pdf_path = os.path.join(td, "input.pdf")
+                out_path = os.path.join(td, "out.xlsx")
+                with open(pdf_path, "wb") as f:
+                    f.write(data)
+                try:
+                    xlsx_bytes, res = _do_convert(data, password, usage)
+                except HTTPException as he:
+                    if isinstance(he.detail, dict):
+                        stage = he.detail.get("stage")
+                        err_msg = he.detail.get("message") or str(he.detail)[:200]
+                    raise
+                out_name = os.path.splitext(filename or "对账单")[0] + ".xlsx"
+                # 结果存任务目录(临时目录会随请求结束删除——踩坑)
+                keep = os.path.join(_RESULTS_DIR, tid + ".xlsx")
+                with open(keep, "wb") as f:
+                    f.write(xlsx_bytes)
+                with _tasks_lock:
+                    TASKS[tid].update({
+                        "status": "ok", "rows": res["rows"],
+                        "ocr_pages": res["ocr_pages"], "ocr_mode": res["ocr_mode"],
+                        "warning": res["warning"], "result_path": keep,
+                        "out_name": out_name,
+                        "duration_s": round(time.time() - t0, 1)})
+                rows = res["rows"]
+        except HTTPException as he:
+            if isinstance(he.detail, dict):
+                stage = he.detail.get("stage")
+                err_msg = he.detail.get("message") or str(he.detail)[:200]
+            raise
+    except Exception as e:  # noqa: BLE001
+        with _tasks_lock:
+            TASKS[tid].update({"status": "fail", "stage": stage or "error",
+                               "error": err_msg or str(e)[:200],
+                               "duration_s": round(time.time() - t0, 1)})
+    finally:
+        _convert_sem.release()
+        try:
+            vlm = getattr(vu._LAST_API_USAGE, "usage", None) or {}
+            u = dict(usage)
+            u["vlm_calls"] = vlm.get("calls", 0)
+            u["vlm_prompt"] = vlm.get("prompt", 0)
+            u["vlm_completion"] = vlm.get("completion", 0)
+            log_store.add_entry(filename, len(data),
+                                "fail" if err_msg else "ok", stage,
+                                ocr_mode or "rule", time.time() - t0,
+                                rows, u, err_msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _purge_tasks():
+    cutoff = time.time() - 6 * 3600
+    with _tasks_lock:
+        for tid in [t for t, v in TASKS.items()
+                    if v.get("created", 0) < cutoff]:
+            TASKS.pop(tid, None)
+            try:
+                os.remove(os.path.join(_RESULTS_DIR, tid + ".xlsx"))
+            except OSError:
+                pass
+
+
+@app.post("/api/tasks")
+def create_task(request: Request, file: UploadFile = File(...), password: str = Form("")):
+    if _rate_limited(request.client.host if request.client else ""):
+        raise HTTPException(429, detail="请求过于频繁, 请稍后再试")
+    data = file.file.read()
+    if len(data) > MAX_MB * 1024 * 1024:
+        raise HTTPException(400, f"文件超过 {MAX_MB}MB 上限")
+    if not data:
+        raise HTTPException(400, "空文件")
+    _purge_tasks()
+    tid = uuid.uuid4().hex
+    with _tasks_lock:
+        TASKS[tid] = {"status": "queued", "created": time.time(),
+                      "filename": file.filename or "对账单.pdf"}
+    threading.Thread(target=_task_worker,
+                     args=(tid, data, file.filename, password, {}),
+                     daemon=True).start()
+    return {"task_id": tid}
+
+
+@app.get("/api/tasks/{tid}")
+def task_status(tid: str):
+    with _tasks_lock:
+        t = TASKS.get(tid)
+        if not t:
+            raise HTTPException(404, "任务不存在或已过期")
+        return {k: t.get(k) for k in ("status", "stage", "error", "rows",
+                                      "ocr_pages", "ocr_mode", "warning",
+                                      "duration_s", "filename")}
+
+
+@app.get("/api/tasks/{tid}/result")
+def task_result(tid: str):
+    with _tasks_lock:
+        t = TASKS.get(tid)
+        if not t:
+            raise HTTPException(404, "任务不存在或已过期")
+        if t.get("status") != "ok":
+            raise HTTPException(409, "任务尚未完成")
+        path, out_name = t["result_path"], t.get("out_name", "对账单.xlsx")
+    from urllib.parse import quote
+    with open(path, "rb") as f:
+        content = f.read()
     return Response(
-        content=xlsx,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=resp_headers,
-    )
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument"
+                   ".spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 "attachment; filename*=UTF-8''" + quote(out_name)})
 
-
-
-
-# ---- /admin 转换日志后台(密码保护, 2026-08-30) ----
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-ADMIN_COOKIE = "b2x_admin"
-
-
-def _admin_token():
-    return hashlib.sha256(("b2x-admin:" + ADMIN_PASSWORD).encode()).hexdigest()[:32]
-
-
-def _admin_authed(request: Request) -> bool:
-    return bool(ADMIN_PASSWORD) and request.cookies.get(ADMIN_COOKIE) == _admin_token()
-
-
-@app.get("/admin")
-def admin_page(request: Request):
-    if not ADMIN_PASSWORD:
-        return HTMLResponse("<h2>未配置 ADMIN_PASSWORD 环境变量, 后台已禁用</h2>", 403)
-    if not _admin_authed(request):
-        return HTMLResponse(LOGIN_HTML)
-    return HTMLResponse(ADMIN_HTML)
-
-
-@app.post("/admin/login")
-def admin_login(password: str = Form("")):
-    if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
-        resp = Response(status_code=303)
-        resp.headers["Location"] = "/admin"
-        resp.set_cookie(ADMIN_COOKIE, _admin_token(), httponly=True,
-                        samesite="lax", max_age=86400 * 7)
-        return resp
-    resp = Response(LOGIN_HTML, status_code=200)
-    return resp
-
-
-@app.get("/admin/logout")
-def admin_logout():
-    resp = Response(status_code=303)
-    resp.headers["Location"] = "/admin"
-    resp.delete_cookie(ADMIN_COOKIE)
-    return resp
-
-
-@app.get("/admin/api/summary")
-def admin_summary(request: Request, days: int = 7):
-    if not _admin_authed(request):
-        raise HTTPException(401, "未登录")
-    log_store.maybe_purge()
-    return log_store.stats(days=min(max(days, 1), 30))
-
-
-@app.get("/admin/api/logs")
-def admin_logs(request: Request, days: int = 7, status: str = "",
-               limit: int = 300, offset: int = 0):
-    if not _admin_authed(request):
-        raise HTTPException(401, "未登录")
-    return log_store.query(days=min(max(days, 1), 30),
-                           status=status or None,
-                           limit=min(limit, 100000), offset=offset)
-
-
-@app.get("/admin/api/export")
-def admin_export(request: Request, days: int = 30):
-    if not _admin_authed(request):
-        raise HTTPException(401, "未登录")
-    return Response(content=log_store.export_json(days=min(max(days, 1), 30)),
-                    media_type="application/json")
-
-log_store.maybe_purge(force=True)  # 启动即清理过期日志
 
 PRIVACY_NOTE = {
     True: ("隐私说明: 转换在您自己的服务器上完成, 文件转换后即删。未能自动识别的新格式"
@@ -604,7 +675,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <p>队列自动保存在本机浏览器（IndexedDB）, 刷新页面不丢失: 待转换的文件、密码、失败原因、已完成的结果都会恢复, 可重新下载。点每行 ✕ 可单独移除。</p>
   <h3>失败怎么办</h3>
   <p>失败的文件会显示原因和建议, 可点"重试"重新转换; 网络中断类失败会自动重试一次。若是新格式识别失败, 点"下载诊断包"（脱敏 JSON, 不含真实数据）发给维护者, 下个版本即可支持。</p>
-  <p style="margin-top:6px">在微信/企业微信内置浏览器里转换大文件可能不稳定（易报网络错误）, 遇到时建议复制链接用系统浏览器（如 Chrome）打开。</p>
+  <p style="margin-top:6px">提交后即使手机锁屏/切后台/网络闪断, 转换仍会在服务器继续完成——回到本页稍等即可收取结果（结果保留 6 小时）。若某浏览器反复报网络错误, 建议换一个浏览器打开。</p>
   <div class="hl">__PRIVACY_NOTE__</div>
 </div></div>
 <script>
@@ -733,27 +804,54 @@ function doDiag(it){
   setTimeout(()=>URL.revokeObjectURL(a.href),30000);
 }
 async function convertOne(it){
-  it.status='run';it.msg=null;render();persist();
+  it.status='run';it.msg='上传中…';it._retried=it._retried||false;render();
   const fd=new FormData();fd.append('file',it.file);fd.append('password',it.pwd||'');
   const t0=performance.now();
+  let pollFails=0;
   try{
-    const r=await fetch('/api/convert',{method:'POST',body:fd});
-    if(!r.ok){
-      const j=await r.json().catch(()=>({}));
+    // 提交任务: 上传完成后连接即可断开, 服务端后台继续转换(移动端友好)
+    const up=await fetch('/api/tasks',{method:'POST',body:fd});
+    if(!up.ok){
+      const j=await up.json().catch(()=>({}));
+      const d=(j.detail&&typeof j.detail==='object')?j.detail:{message:String(j.detail||('HTTP '+up.status))};
+      it.status='fail';it.detail=d;it.msg=d.message||('HTTP '+up.status);
+      persist();render();return;
+    }
+    const tid=(await up.json()).task_id;
+    // 轮询结果(容忍最多 6 次瞬断; 服务端不受影响继续转换)
+    while(true){
+      await new Promise(r=>setTimeout(r,2500));
+      let s=null;
+      try{
+        s=await fetch('/api/tasks/'+tid).then(r=>r.json());
+        pollFails=0;
+      }catch(pe){
+        if(++pollFails>=6)throw pe;
+        continue;
+      }
+      if(s.status==='queued'||s.status==='running'){
+        const sec=Math.round((performance.now()-t0)/1000);
+        it.msg='转换中… '+sec+'s'+(s.ocr_pages?' · OCR '+s.ocr_pages+' 页':'');
+        render();continue;
+      }
+      if(s.status==='ok'){
+        const rb=await fetch('/api/tasks/'+tid+'/result');
+        it.blob=await rb.blob();
+        it.blobUrl=URL.createObjectURL(it.blob);
+        it.status='ok';
+        const warn=s.warning;
+        it.msg=fmtSize(it.blob.size)+' · '+s.duration_s+'s'+
+          (s.ocr_pages?' · OCR '+s.ocr_pages+' 页':'')+(warn?' · '+warn:'');
+        doDownload(it);
+        break;
+      }
+      // fail
       it.status='fail';
-      it.detail=(j.detail&&typeof j.detail==='object')?j.detail:{message:String(j.detail||('HTTP '+r.status))};
-      it.msg=it.detail.message||('HTTP '+r.status);
-    }else{
-      it.blob=await r.blob();
-      it.blobUrl=URL.createObjectURL(it.blob);
-      it.status='ok';
-      const ocr=r.headers.get('X-OCR-Pages'),warn=r.headers.get('X-OCR-Warning');
-      it.msg=fmtSize(it.blob.size)+' · '+(Math.round(performance.now()-t0)/1000)+'s'+
-        (ocr?' · OCR '+ocr+' 页':'')+(warn?' · '+warn:'');
-      doDownload(it);
+      it.detail={message:s.error||'转换失败',stage:s.stage};
+      it.msg=s.error||'转换失败';
+      break;
     }
   }catch(e){
-    // 网络层错误(连接被重置/中断, 常见于手机内置浏览器): 自动重试一次
     const netErr=(e instanceof TypeError)||/fetch|network|Failed|abort/i.test(e.message||'');
     if(!it._retried&&netErr){
       it._retried=true;it.status='pending';it.msg='网络中断, 5 秒后自动重试…';
