@@ -316,7 +316,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .badge.run{background:#e5f0ff;color:#1a73e8}
   .badge.ok{background:#e6f6ef;color:#12805c}
   .badge.fail{background:#fdecea;color:#d92d20}
-  .pin{flex-shrink:0;width:118px;border:1px solid #d5dbe3;border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;transition:border .15s}
+  .pin{flex-shrink:0;width:112px;border:1px solid #d5dbe3;border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;transition:border .15s}
   .pin:focus{border-color:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.12)}
   .pin:disabled{background:#f6f8fb;color:#98a2b3}
   .btn{background:#1a73e8;color:#fff;border:0;padding:10px 22px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
@@ -325,6 +325,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .btn.ghost{background:#fff;color:#344054;border:1px solid #d5dbe3}
   .btn.ghost:hover{background:#f6f8fb}
   .linkbtn{background:none;border:none;color:#1a73e8;cursor:pointer;font-size:12.5px;padding:0;text-decoration:underline;flex-shrink:0}
+  .linkbtn.del{color:#d92d20;font-size:15px;text-decoration:none;font-weight:700;padding:2px 6px;border-radius:6px}
+  .linkbtn.del:hover{background:#fdecea}
+  .linkbtn.del:disabled{color:#d0d5dd;cursor:not-allowed;background:none}
   .bar{display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:10px}
   .progress{color:#667085;font-size:13px}
   .empty{color:#98a2b3;font-size:13px;text-align:center;padding:14px 0 4px}
@@ -336,10 +339,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="card">
   <div id="drop">
     <div class="big">点选或拖入对账单 PDF（可多选, 最多 10 个）</div>
-    <div class="hint" id="hint">加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB</div>
+    <div class="hint" id="hint">加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB · 队列本地自动保存, 刷新不丢失</div>
   </div>
   <input type="file" id="f" accept=".pdf" multiple hidden>
-  <div class="foot-note">加密的 PDF（如华夏银行）请在该文件行内的密码框填写打开密码; 未填则按无密码转换。密码仅用于本次转换, 不做任何存储。</div>
+  <div class="foot-note">加密的 PDF（如华夏银行）请在该文件行内的密码框填写打开密码; 未填则按无密码转换。密码仅保存在本机浏览器, 随文件转换使用, 不上传存储。</div>
 </div>
 <div class="card">
   <div class="queue" id="queue"><div class="empty">队列为空 — 先添加文件</div></div>
@@ -356,9 +359,52 @@ const MAXQ=10;
 const drop=document.getElementById('drop'),hint=document.getElementById('hint'),f=document.getElementById('f'),
       queueEl=document.getElementById('queue'),prog=document.getElementById('prog'),
       startBtn=document.getElementById('start'),clearBtn=document.getElementById('clear');
-const HINT_DEFAULT='加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB';
-let items=[];  // {file, pwd, status: pending|run|ok|fail, msg, blobUrl, detail}
+const HINT_DEFAULT='加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB · 队列本地自动保存, 刷新不丢失';
+let items=[];  // {file, pwd, status, msg, blob, detail}
 let running=false;
+
+// ---- IndexedDB 持久化: 文件/密码/状态/结果跨刷新保留 ----
+let _dbPromise=null;
+function idb(){
+  // 单例连接: 每次开新连接会堆积, 挂起后续 open/delete 请求(踩坑)
+  if(!_dbPromise){
+    _dbPromise=new Promise((res,rej)=>{
+      const r=indexedDB.open('b2xq',1);
+      r.onupgradeneeded=()=>r.result.createObjectStore('items',{keyPath:'id'});
+      r.onsuccess=()=>res(r.result);
+      r.onerror=()=>rej(r.error);
+      setTimeout(()=>rej(new Error('idb open timeout')),2500);
+    }).catch(e=>{_dbPromise=null;throw e});
+  }
+  return _dbPromise;
+}
+async function persist(){
+  try{
+    const db=await idb();
+    const tx=db.transaction('items','readwrite');
+    tx.objectStore('items').clear();
+    items.forEach((it,i)=>tx.objectStore('items').put({
+      id:i, file:it.file, pwd:it.pwd||'', status:it.status,
+      msg:it.msg||'', blob:it.blob||null, detail:it.detail||null }));
+  }catch(e){/* 存储失败不影响功能, 仅失去刷新恢复 */}
+}
+async function restore(){
+  try{
+    const db=await Promise.race([idb(),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('idb timeout')),2500))]);
+    const rq=db.transaction('items','readonly').objectStore('items').getAll();
+    rq.onsuccess=()=>{
+      items=(rq.result||[]).sort((a,b)=>a.id-b.id).map(x=>({
+        file:x.file, pwd:x.pwd||'',
+        status:x.status==='run'?'pending':x.status,  // 刷新时被打断的转换回到等待
+        msg:x.msg, blob:x.blob||null, detail:x.detail||null,
+      })).map(x=>({...x, blobUrl:x.blob?URL.createObjectURL(x.blob):null}));
+      render();
+    };
+    rq.onerror=()=>render();
+  }catch(e){render()}
+}
+// ---- 渲染 ----
 function fmtSize(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,n/1024).toFixed(0)+' KB'}
 function flashHint(msg){
   hint.textContent=msg;hint.classList.add('warn');
@@ -380,16 +426,23 @@ function render(){
       escapeHtml(it.file.name)+' '+lock+'</div><div class="fmsg '+(it.status==='fail'?'err':it.status==='ok'?'ok':'')+'">'+
       escapeHtml(msg)+'</div>'+(it.status==='fail'&&it.detail&&it.detail.suggestion?'<div class="err-detail">建议: '+escapeHtml(it.detail.suggestion)+'</div>':'')+
       '</div><input type="password" class="pin" data-pwd="'+i+'" placeholder="无密码" value="'+escapeHtml(it.pwd||'')+'" '+(running?'disabled':'')+
-      '><span class="badge '+it.status+'">'+badge+'</span>'+(actions||'');
+      '><span class="badge '+it.status+'">'+badge+'</span>'+(actions||'')+
+      '<button class="linkbtn del" data-del="'+i+'" title="从队列移除" '+(it.status==='run'?'disabled':'')+'>✕</button>';
     queueEl.appendChild(d);
   });
   const done=items.filter(x=>x.status==='ok'||x.status==='fail').length;
   prog.textContent=items.length?('进度 '+done+' / '+items.length):'';
   startBtn.disabled=!items.some(x=>x.status==='pending')||running;
   clearBtn.disabled=!items.length||running;
-  queueEl.querySelectorAll('[data-pwd]').forEach(inp=>inp.oninput=e=>{items[+e.target.dataset.pwd].pwd=e.target.value});
+  queueEl.querySelectorAll('[data-pwd]').forEach(inp=>inp.oninput=e=>{items[+e.target.dataset.pwd].pwd=e.target.value;persist()});
   queueEl.querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>doDownload(items[+b.dataset.dl]));
   queueEl.querySelectorAll('[data-diag]').forEach(b=>b.onclick=()=>doDiag(items[+b.dataset.diag]));
+  queueEl.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>removeAt(+b.dataset.del));
+}
+function removeAt(i){
+  if(items[i].status==='run')return;
+  if(items[i].blobUrl)URL.revokeObjectURL(items[i].blobUrl);
+  items.splice(i,1);persist();render();
 }
 function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function addFiles(files){
@@ -398,13 +451,15 @@ function addFiles(files){
     if(items.length>=MAXQ){skipped++;continue}
     if(!/\.pdf$/i.test(f.name))continue;
     if(items.some(x=>x.file.name===f.name&&x.file.size===f.size))continue;
-    items.push({file:f,pwd:'',status:'pending',msg:null,blobUrl:null,detail:null});
+    items.push({file:f,pwd:'',status:'pending',msg:null,blob:null,blobUrl:null,detail:null});
     added++;
   }
   if(skipped)flashHint('队列上限 '+MAXQ+' 个, 已跳过 '+skipped+' 个文件 — 先转换或清空后再添加');
+  if(added)persist();
   render();
 }
 function doDownload(it){
+  if(!it.blobUrl)it.blobUrl=URL.createObjectURL(it.blob);
   const a=document.createElement('a');a.href=it.blobUrl;
   a.download=it.file.name.replace(/\.pdf$/i,'')+'.xlsx';a.click();
 }
@@ -415,7 +470,7 @@ function doDiag(it){
   setTimeout(()=>URL.revokeObjectURL(a.href),30000);
 }
 async function convertOne(it){
-  it.status='run';it.msg=null;render();
+  it.status='run';it.msg=null;render();persist();
   const fd=new FormData();fd.append('file',it.file);fd.append('password',it.pwd||'');
   const t0=performance.now();
   try{
@@ -426,25 +481,24 @@ async function convertOne(it){
       it.detail=(j.detail&&typeof j.detail==='object')?j.detail:{message:String(j.detail||('HTTP '+r.status))};
       it.msg=it.detail.message||('HTTP '+r.status);
     }else{
-      const blob=await r.blob();
-      it.blobUrl=URL.createObjectURL(blob);
+      it.blob=await r.blob();
+      it.blobUrl=URL.createObjectURL(it.blob);
       it.status='ok';
       const ocr=r.headers.get('X-OCR-Pages'),warn=r.headers.get('X-OCR-Warning');
-      it.msg=fmtSize(blob.size)+' · '+(Math.round(performance.now()-t0)/1000)+'s'+
+      it.msg=fmtSize(it.blob.size)+' · '+(Math.round(performance.now()-t0)/1000)+'s'+
         (ocr?' · OCR '+ocr+' 页':'')+(warn?' · '+warn:'');
       doDownload(it);
     }
   }catch(e){it.status='fail';it.detail={message:e.message};it.msg='网络错误: '+e.message}
-  render();
+  persist();render();
 }
 async function startAll(){
   running=true;render();
-  // 逐个排队转换(串行): 服务端 OCR/内存资源有限, 避免并发争抢
   let it;
   while((it=items.find(x=>x.status==='pending'))){
     await convertOne(it);
   }
-  running=false;render();
+  running=false;persist();render();
 }
 drop.onclick=()=>f.click();
 ['dragover','dragenter'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.add('over')}));
@@ -454,9 +508,9 @@ f.addEventListener('change',()=>{addFiles(f.files);f.value=''});
 startBtn.onclick=startAll;
 clearBtn.onclick=()=>{
   items.forEach(x=>{if(x.blobUrl)URL.revokeObjectURL(x.blobUrl)});
-  items=[];render();
+  items=[];persist();render();
 };
-render();
+restore();
 </script></div></body></html>"""
 
 
