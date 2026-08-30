@@ -293,7 +293,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <style>
   *{box-sizing:border-box}
   body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f3f5f9;margin:0;color:#1f2328;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:720px;margin:0 auto;padding:28px 16px 48px}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 16px 48px}
   h1{font-size:22px;margin:0 0 4px}
   .sub{color:#6b7280;font-size:13px;line-height:1.7;margin-bottom:20px}
   .card{background:#fff;border:1px solid #e7eaf0;border-radius:14px;box-shadow:0 1px 3px rgba(16,24,40,.05);padding:20px;margin-bottom:14px}
@@ -302,13 +302,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #drop.over{border-color:#1a73e8;background:#eef5ff;transform:scale(1.01)}
   #drop .big{font-size:16px;font-weight:600;margin-bottom:6px}
   #drop .hint{color:#8a94a6;font-size:13px}
-  .field{margin-top:14px}
-  .field label{display:block;font-size:13px;color:#57606a;margin-bottom:6px;font-weight:600}
-  .field input{width:100%;border:1px solid #d5dbe3;border-radius:8px;padding:9px 12px;font-size:14px;outline:none;transition:border .15s}
-  .field input:focus{border-color:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.12)}
-  .field .note{color:#98a2b3;font-size:12px;margin-top:5px}
+  #drop .hint.warn{color:#d92d20;font-weight:600}
   .queue{margin-top:4px}
-  .item{display:flex;align-items:center;gap:12px;padding:11px 4px;border-bottom:1px solid #f0f2f6;font-size:13px}
+  .item{display:flex;align-items:center;gap:10px;padding:11px 4px;border-bottom:1px solid #f0f2f6;font-size:13px}
   .item:last-child{border-bottom:0}
   .ficon{width:34px;height:34px;border-radius:8px;background:#eef3fb;color:#1a73e8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0}
   .fmeta{flex:1;min-width:0}
@@ -320,6 +316,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .badge.run{background:#e5f0ff;color:#1a73e8}
   .badge.ok{background:#e6f6ef;color:#12805c}
   .badge.fail{background:#fdecea;color:#d92d20}
+  .pin{flex-shrink:0;width:118px;border:1px solid #d5dbe3;border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;transition:border .15s}
+  .pin:focus{border-color:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.12)}
+  .pin:disabled{background:#f6f8fb;color:#98a2b3}
   .btn{background:#1a73e8;color:#fff;border:0;padding:10px 22px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
   .btn:hover{background:#1662c6}
   .btn:disabled{background:#c2d6f2;cursor:not-allowed}
@@ -330,20 +329,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .progress{color:#667085;font-size:13px}
   .empty{color:#98a2b3;font-size:13px;text-align:center;padding:14px 0 4px}
   .err-detail{background:#fff8f7;border:1px solid #f4d3cf;border-radius:8px;padding:9px 11px;margin-top:7px;font-size:12.5px;color:#7a271a;line-height:1.6}
+  .foot-note{color:#98a2b3;font-size:12px;margin-top:10px}
 </style></head><body><div class="wrap">
 <h1>对账单 PDF → Excel</h1>
 <div class="sub">私有转换服务 · 文件转换完即删 · __PRIVACY_NOTE__</div>
 <div class="card">
   <div id="drop">
-    <div class="big">点选或拖入对账单 PDF（可多选）</div>
-    <div class="hint">加入队列后统一开始转换 · 单个文件 ≤ 200MB</div>
+    <div class="big">点选或拖入对账单 PDF（可多选, 最多 10 个）</div>
+    <div class="hint" id="hint">加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB</div>
   </div>
   <input type="file" id="f" accept=".pdf" multiple hidden>
-  <div class="field">
-    <label>PDF 打开密码（可选）</label>
-    <input type="text" id="pwd" placeholder="加密 PDF（如华夏银行）的打开密码, 对本批全部文件生效">
-    <div class="note">不加密的文件无需填写; 密码仅用于本次转换, 不做任何存储</div>
-  </div>
+  <div class="foot-note">加密的 PDF（如华夏银行）请在该文件行内的密码框填写打开密码; 未填则按无密码转换。密码仅用于本次转换, 不做任何存储。</div>
 </div>
 <div class="card">
   <div class="queue" id="queue"><div class="empty">队列为空 — 先添加文件</div></div>
@@ -356,11 +352,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <script>
-const drop=document.getElementById('drop'),f=document.getElementById('f'),pwd=document.getElementById('pwd'),
+const MAXQ=10;
+const drop=document.getElementById('drop'),hint=document.getElementById('hint'),f=document.getElementById('f'),
       queueEl=document.getElementById('queue'),prog=document.getElementById('prog'),
       startBtn=document.getElementById('start'),clearBtn=document.getElementById('clear');
-let items=[];  // {file, status: pending|run|ok|fail, msg, blobUrl, detail}
+const HINT_DEFAULT='加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB';
+let items=[];  // {file, pwd, status: pending|run|ok|fail, msg, blobUrl, detail}
+let running=false;
 function fmtSize(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,n/1024).toFixed(0)+' KB'}
+function flashHint(msg){
+  hint.textContent=msg;hint.classList.add('warn');
+  setTimeout(()=>{hint.textContent=HINT_DEFAULT;hint.classList.remove('warn')},4000);
+}
 function render(){
   queueEl.innerHTML = items.length ? '' : '<div class="empty">队列为空 — 先添加文件</div>';
   items.forEach((it,i)=>{
@@ -372,27 +375,33 @@ function render(){
       actions='<button class="linkbtn" data-dl="'+i+'">下载 xlsx</button>';
     if(it.status==='fail'&&it.detail&&it.detail.diag)
       actions='<button class="linkbtn" data-diag="'+i+'">下载诊断包</button>';
+    const lock=it.pwd?'🔒':'';
     d.innerHTML='<div class="ficon">PDF</div><div class="fmeta"><div class="fname">'+
-      escapeHtml(it.file.name)+'</div><div class="fmsg '+(it.status==='fail'?'err':it.status==='ok'?'ok':'')+'">'+
+      escapeHtml(it.file.name)+' '+lock+'</div><div class="fmsg '+(it.status==='fail'?'err':it.status==='ok'?'ok':'')+'">'+
       escapeHtml(msg)+'</div>'+(it.status==='fail'&&it.detail&&it.detail.suggestion?'<div class="err-detail">建议: '+escapeHtml(it.detail.suggestion)+'</div>':'')+
-      '</div><span class="badge '+it.status+'">'+badge+'</span>'+(actions||'');
+      '</div><input type="password" class="pin" data-pwd="'+i+'" placeholder="无密码" value="'+escapeHtml(it.pwd||'')+'" '+(running?'disabled':'')+
+      '><span class="badge '+it.status+'">'+badge+'</span>'+(actions||'');
     queueEl.appendChild(d);
   });
   const done=items.filter(x=>x.status==='ok'||x.status==='fail').length;
-  const running=items.some(x=>x.status==='run');
   prog.textContent=items.length?('进度 '+done+' / '+items.length):'';
   startBtn.disabled=!items.some(x=>x.status==='pending')||running;
   clearBtn.disabled=!items.length||running;
+  queueEl.querySelectorAll('[data-pwd]').forEach(inp=>inp.oninput=e=>{items[+e.target.dataset.pwd].pwd=e.target.value});
   queueEl.querySelectorAll('[data-dl]').forEach(b=>b.onclick=()=>doDownload(items[+b.dataset.dl]));
   queueEl.querySelectorAll('[data-diag]').forEach(b=>b.onclick=()=>doDiag(items[+b.dataset.diag]));
 }
 function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function addFiles(files){
+  let added=0,skipped=0;
   for(const f of files){
-    if(!/\.pdf$/i.test(f.name)){continue}
+    if(items.length>=MAXQ){skipped++;continue}
+    if(!/\.pdf$/i.test(f.name))continue;
     if(items.some(x=>x.file.name===f.name&&x.file.size===f.size))continue;
-    items.push({file:f,status:'pending',msg:null,blobUrl:null,detail:null});
+    items.push({file:f,pwd:'',status:'pending',msg:null,blobUrl:null,detail:null});
+    added++;
   }
+  if(skipped)flashHint('队列上限 '+MAXQ+' 个, 已跳过 '+skipped+' 个文件 — 先转换或清空后再添加');
   render();
 }
 function doDownload(it){
@@ -407,7 +416,7 @@ function doDiag(it){
 }
 async function convertOne(it){
   it.status='run';it.msg=null;render();
-  const fd=new FormData();fd.append('file',it.file);fd.append('password',pwd.value);
+  const fd=new FormData();fd.append('file',it.file);fd.append('password',it.pwd||'');
   const t0=performance.now();
   try{
     const r=await fetch('/api/convert',{method:'POST',body:fd});
@@ -429,14 +438,13 @@ async function convertOne(it){
   render();
 }
 async function startAll(){
-  const pend=items.filter(x=>x.status==='pending');
-  const workers=new Array(Math.min(2,pend.length)).fill(0).map(async()=>{
-    while(true){
-      const it=pend.shift();if(!it)break;
-      await convertOne(it);
-    }
-  });
-  await Promise.all(workers);
+  running=true;render();
+  // 逐个排队转换(串行): 服务端 OCR/内存资源有限, 避免并发争抢
+  let it;
+  while((it=items.find(x=>x.status==='pending'))){
+    await convertOne(it);
+  }
+  running=false;render();
 }
 drop.onclick=()=>f.click();
 ['dragover','dragenter'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.add('over')}));
