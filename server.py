@@ -668,7 +668,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="mask"><div id="help">
   <h2>使用帮助 <button class="x" id="helpx">✕</button></h2>
   <h3>基本流程</h3>
-  <p>1. 点选或拖入 PDF（可多选, 最多 10 个）→ 2. 加密的文件在行内密码框填入打开密码 → 3. 点"开始转换", 逐个排队转换 → 4. 完成后自动下载, 也可点"下载 xlsx"重新下载。</p>
+  <p>1. 点选或拖入 PDF（可多选, 最多 10 个）→ 2. 加密的文件在行内密码框填入打开密码 → 3. 点"开始转换", 逐个排队转换 → 4. 完成后点该行的"下载 xlsx"保存到手机。</p>
   <h3>密码说明</h3>
   <p>加密 PDF（如华夏银行）在该文件行内的密码框填写打开密码, 未填则按无密码转换。密码只保存在你自己的浏览器里、随转换使用, 服务器不做任何存储。</p>
   <h3>队列与刷新</h3>
@@ -842,7 +842,6 @@ async function convertOne(it){
         const warn=s.warning;
         it.msg=fmtSize(it.blob.size)+' · '+s.duration_s+'s'+
           (s.ocr_pages?' · OCR '+s.ocr_pages+' 页':'')+(warn?' · '+warn:'');
-        doDownload(it);
         break;
       }
       // fail
