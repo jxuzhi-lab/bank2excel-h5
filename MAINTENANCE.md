@@ -194,6 +194,13 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 
 **GLM-OCR 备选方案实测（2026-08-30, 未集成）**：智谱 `glm-ocr` 走专用端点 `POST /paas/v4/layout_parsing`，`file` 传 `data:image/jpeg;base64,...`（裸 base64/文件上传均不支持, files 接口 purpose=ocr 报错）。实测北京银行 3 页扫描件（2.5x JPEG）：**平均 4704 tokens/页**（prompt~2650 + completion~2050）, 8-14s/页, 返回结构化 markdown（含印章文字, **无坐标**——夹心层方案用不了, 集成需 md→记录转换层）。定价 0.2 元/百万 token（输入输出同价）；用户持有 8 元/5000 万 token 资源包（0.16 元/M）≈ **0.00075 元/页, 整包约 1 万页**。牌价下 0.00094 元/页。注意 token 消耗与渲染分辨率正相关, 降 zoom 可省钱。
 
+**GLM-OCR 水印样本全量实验（2026-08-30, 民生 20 页扫描件 = RapidOCR 失败的同一样本）**：
+- **水印完胜**：水印/开户机构文字只出现在表外文档文本, 表格内 0 污染, 表头 10 列与基准完全一致——夹心层的头号坑（水印进表头带→列错位级联）被根治。
+- **表格质量高**：359 条记录零脏行零多行, 金额格式干净, HTML `<table>` 解析容易。
+- **新坑——页级输出截断**：2/20 页（10%）生成退化, completion 跑满 ~8289 token 内部上限, `<table>` 无闭合、末行切在流水号中间; temperature=0 下跨 zoom/跨 max_tokens 参数都确定性复现, **不可重试修复**。整页静默丢失 42 笔（借方合计虚差 149 万）。
+- **缓解路径明确**：截断可检测（闭合标签+completion 阈值）→ 失败页回退 RapidOCR 夹心层。推荐架构：**GLM-OCR 主路径（含逐页校验）+ 夹心层兜底 + md→记录转换层**（HTML 表格解析已验证可行）。
+- 运维注意：并发 4 会触发限流（部分页失败需补跑）, 客户端要限速; 全实验含重试共耗 ~21 万 token ≈ 0.034 元。
+
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
