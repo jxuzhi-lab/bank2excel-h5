@@ -190,6 +190,10 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 4. 反直觉：工商对角印章/防伪码**零泄漏**（RapidOCR 读不了斜排文字反而因祸得福）, 其损害主要来自表头列结构错位（10 列 vs 11 列, 余额列 0/525）。水印密度不决定成败（北京银行 111 词/3 页曾 100% 通过）, **水印/页眉是否落在表头带附近才是关键**。
 → 改进方向（未做）：ocr_layer 内做跨页水印行抑制（相似文本+近似位置的行不写入夹心层）；表头列数与启发式不一致时用 VLM 复核；把"笔数校验"结果暴露给用户提示丢行风险。
 
+→ 改进方向（未做）：ocr_layer 内做跨页水印行抑制（相似文本+近似位置的行不写入夹心层）；表头列数与启发式不一致时用 VLM 复核；把"笔数校验"结果暴露给用户提示丢行风险。
+
+**GLM-OCR 备选方案实测（2026-08-30, 未集成）**：智谱 `glm-ocr` 走专用端点 `POST /paas/v4/layout_parsing`，`file` 传 `data:image/jpeg;base64,...`（裸 base64/文件上传均不支持, files 接口 purpose=ocr 报错）。实测北京银行 3 页扫描件（2.5x JPEG）：**平均 4704 tokens/页**（prompt~2650 + completion~2050）, 8-14s/页, 返回结构化 markdown（含印章文字, **无坐标**——夹心层方案用不了, 集成需 md→记录转换层）。定价 0.2 元/百万 token（输入输出同价）；用户持有 8 元/5000 万 token 资源包（0.16 元/M）≈ **0.00075 元/页, 整包约 1 万页**。牌价下 0.00094 元/页。注意 token 消耗与渲染分辨率正相关, 降 zoom 可省钱。
+
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
