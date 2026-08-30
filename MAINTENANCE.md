@@ -227,6 +227,10 @@ cd /opt/bank2excel-h5 && sudo docker compose up -d --build
 
 **Dual 通道已上线（2026-08-30 部署 VPS 并线上满分验收）**：`baidu_ocr.py`（新）+ `glm_ocr.py` 升级。架构：GLM-OCR 主路径 → 余额链断点检测 → GLM 定向重试（换 zoom 两轮）→ 仍断点则**百度表格识别精锐兜底**（仅断点页, 封顶 BAIDU_OCR_MAX_PAGES=4 页/文档）。断点页定位用**内容锚定**（断点前行签名所在页, 累计行数映射会漂移——踩坑）。百度结果经**直接网格重组**（表头包含关系映射 + 行形态拆分, 不经引擎——cell 级夹心+引擎提取路线实测脆弱已弃）合入, 配套四层修复：粘连行拆分（日期+摘要偶发粘连）、页缝相邻去重（键=(日期数字串, 余额数字串)——**禁用 float**, 20 位流水号超 float64 精度会误删合法行——踩坑；余额为空的行不参与折叠——踩坑）、百度页空余额链式补全、错误余额链式纠错（仅百度来源行, 金额实测高度可靠）。**民生压测终局：401/401 行、借贷合计分毫不差、逐行余额 401/401、余额链完整**（RapidOCR 389 行列污染 / GLM 单通道 381 行缺 20）。竖拼实测否决：单页三值 21/21 → 2 页拼 37/41 → 3 页拼 17/63, 服务端对超高图内部降采样, 质量随图高单调劣化。配置：BAIDU_OCR_API_KEY/SECRET_KEY（未配置自动跳过百度级, 降级为 GLM 单通道）。VPS compose 已配 BAIDU_OCR_API_KEY/SECRET_KEY（百度体验额度 1000 次约余 900）；线上实测民生扫描件 401/401 + 借贷合计分毫不差 + 逐行余额 401/401, 模式头 glm-ocr+baidu。**Dockerfile 已加 COPY glm_ocr.py / baidu_ocr.py**（漏 COPY 会容器崩溃循环——已知坑）。
 
+
+**PaddleOCR-VL 文档解析实测（2026-08-30, 未集成）**：接口 `POST /rest/2.0/brain/online/v2/paddle-vl-parser/task`（异步: 提交返回 task_id → `/task/query` 轮询 5-10s 起; form 表单, 参数 `file_data`=base64 + `file_name` 必填）。**整份 PDF 一次调用**（≤500 页/100M）。民生 20 页水印扫描件实测：单调用 64s 出全部 20 页; 内容存在性 **396/401（约 99%）**, 缺一个 4 行连续块+1 行（恰是历来最难的 3 月 16 日页边界区）; 输出 markdown 表头 10 列全分离（无表格 V2 的合并表头问题）, 另有 cells+matrix 结构与 span_boxes 行坐标（需开 return_span_boxes）。坑：markdown 的 `|---|` 分隔行与页边界重复行需解析层清洗（437 原始行→清洗后对位评估才有意义）。成本 0.009 元/页（9 元/1000 页）, 为 GLM-OCR 的 12 倍、表格 V2 的 36%。**结论：不替代 GLM-OCR 主路径（贵 12 倍）; 作兜底通道与表格 V2 二选一——小额定向兜底（2-3 页）表格 V2 更便宜且质量满分, 整文档级重做（>8 页）PaddleOCR-VL 更划算且集成简单（单调用）+ 免费跨页合并 merge_tables/水印擦除 erase_watermark 等开关未实测。当前架构维持 GLM-OCR 主 + 表格 V2 定向兜底不变。**
+
+**关键文件**：
 **关键文件**：
 - `python/vision_utils.py`、`python/onboard_format.py`：从 scripts/ 真源同步（vision_utils 含 api provider）。**改 scripts/ 后记得 cp 到 python/**（引擎双副本 SOP 的扩展）
 - `tests/test_vps_fallback.py`：端到端冒烟（自建假 VLM 端点 + 合成未知格式 PDF），8 场景断言升级链/缓存/协议形态，`python tests/test_vps_fallback.py` 即可跑
