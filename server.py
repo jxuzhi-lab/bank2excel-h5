@@ -23,6 +23,7 @@
 才会发给所配置的外部视觉模型; 描述符只含列模板(列名+x 区间), 不含任何账单数据。
 """
 import collections
+import hashlib
 import json
 import os
 import sys
@@ -36,6 +37,7 @@ from fastapi.responses import HTMLResponse, Response  # noqa: E402
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(BASE, "python"))
 
+import log_store  # noqa: E402  转换日志(SQLite, 保留 30 天)
 import extract_bank_statement as eng  # noqa: E402  完整引擎(PYODIDE 未设 → CPython 全功能)
 import vision_utils as vu  # noqa: E402
 import ocr_layer  # noqa: E402  服务端扫描件 RapidOCR 夹心层(OCR_ENABLED 可关)
@@ -169,6 +171,8 @@ def convert(request: Request, file: UploadFile = File(...),
         raise HTTPException(400, "空文件")
     if not _convert_sem.acquire(timeout=120):
         raise HTTPException(503, detail="当前转换并发已满, 请稍后重试")
+    t0, usage, ocr_mode, ocr_pages, glm_direct = time.time(), {}, "", 0, False
+    stage, err_msg, rows = None, None, None
     try:
         with tempfile.TemporaryDirectory(prefix="b2x_") as td:
             pdf_path = os.path.join(td, "input.pdf")
@@ -188,14 +192,18 @@ def convert(request: Request, file: UploadFile = File(...),
             if OCR_ENABLED:
                 try:
                     _doc = ocr_layer.pymupdf.open(pdf_path)
-                    _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
-                    _n_pages = len(_doc)
-                    _doc.close()
+                    try:
+                        _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
+                        _n_pages = len(_doc)
+                    finally:
+                        # 加密文件 needs_ocr 会抛异常, close 必须兜底
+                        # (Windows 句柄不释放会让临时目录清理失败→500, 踩坑)
+                        _doc.close()
                     if _need:
                         glm = None
                         if glm_ocr.get_key():
                             try:
-                                glm = glm_ocr.parse_scanned_pdf(pdf_path, _n_pages)
+                                glm = glm_ocr.parse_scanned_pdf(pdf_path, _n_pages, usage=usage)
                             except Exception as ge:  # noqa: BLE001
                                 print(f"[提示] GLM-OCR 异常, 转夹心层: {ge}", flush=True)
                                 glm = None
@@ -216,7 +224,7 @@ def convert(request: Request, file: UploadFile = File(...),
                             # 余额链断点驱动的定向重试(跨轮非确定性可恢复静默漏行);
                             # 仍断则升级百度表格识别兜底(仅断点页)
                             glm["pages"], gaps, baidu_pgs = glm_ocr.refine_gaps(
-                                pdf_path, glm["pages"], debug=True)
+                                pdf_path, glm["pages"], debug=True, usage=usage)
                             _hdr, _recs, _meta = glm_ocr.build_engine_records(glm["pages"])
                             _write_glm_xlsx(_hdr, _recs, out_path)
                             glm_direct = True
@@ -241,26 +249,61 @@ def convert(request: Request, file: UploadFile = File(...),
                             if ocr_pages:
                                 convert_src = scan_pdf
                                 ocr_mode = ocr_mode or "ocr-sandwich"
-                except HTTPException:
+                except HTTPException as he:
+                    if isinstance(he.detail, dict):
+                        stage = he.detail.get("stage")
+                        err_msg = he.detail.get("message") or str(he.detail)[:200]
                     raise
                 except Exception as oe:  # noqa: BLE001 (OCR 失败按原样走引擎报扫描件错误)
                     ocr_pages = -1
                     ocr_mode = f"error: {oe}"
+                    err_msg = f"OCR 预处理失败: {oe}"
                     print(f"[提示] OCR 预处理失败: {oe}", flush=True)
             if not glm_direct:
                 try:
-                    eng.convert_pdf(
+                    r = eng.convert_pdf(
                         convert_src, out_path=out_path, sheet="对账单",
                         password=password or None,
                         quick_classify=True, diag=True,
                         onboard_cache=DESC_CACHE_DIR,
                     )
+                    try:
+                        rows = r[1].get("rows")
+                    except Exception:  # noqa: BLE001
+                        rows = None
+                except HTTPException as he:
+                    if isinstance(he.detail, dict):
+                        stage = he.detail.get("stage") or stage
+                        err_msg = he.detail.get("message") or str(he.detail)[:200]
+                    raise
                 except Exception as e:  # noqa: BLE001
                     raise HTTPException(422, detail=_diag_payload(out_path, e))
             with open(out_path, "rb") as f:
                 xlsx = f.read()
+    except HTTPException as he:
+        if isinstance(he.detail, dict):
+            stage = he.detail.get("stage") or stage
+            err_msg = he.detail.get("message") or str(he.detail)[:200]
+        else:
+            err_msg = str(he.detail)
+        raise
+    except Exception as e:  # noqa: BLE001
+        stage, err_msg = stage or "error", str(e)[:200]
+        raise
     finally:
         _convert_sem.release()
+        try:
+            vlm = getattr(vu._LAST_API_USAGE, "usage", None) or {}
+            u = dict(usage)
+            u["vlm_calls"] = vlm.get("calls", 0)
+            u["vlm_prompt"] = vlm.get("prompt", 0)
+            u["vlm_completion"] = vlm.get("completion", 0)
+            log_store.add_entry(file.filename, len(data),
+                                "fail" if err_msg else "ok", stage,
+                                ocr_mode or "rule", time.time() - t0,
+                                rows, u, err_msg)
+        except Exception:  # noqa: BLE001
+            pass
     out_name = os.path.splitext(file.filename or "对账单")[0] + ".xlsx"
     # 中文文件名: RFC 5987 编码(Header 必须 latin-1 可表示)
     from urllib.parse import quote
@@ -280,12 +323,193 @@ def convert(request: Request, file: UploadFile = File(...),
     )
 
 
+
+
+# ---- /admin 转换日志后台(密码保护, 2026-08-30) ----
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_COOKIE = "b2x_admin"
+
+
+def _admin_token():
+    return hashlib.sha256(("b2x-admin:" + ADMIN_PASSWORD).encode()).hexdigest()[:32]
+
+
+def _admin_authed(request: Request) -> bool:
+    return bool(ADMIN_PASSWORD) and request.cookies.get(ADMIN_COOKIE) == _admin_token()
+
+
+@app.get("/admin")
+def admin_page(request: Request):
+    if not ADMIN_PASSWORD:
+        return HTMLResponse("<h2>未配置 ADMIN_PASSWORD 环境变量, 后台已禁用</h2>", 403)
+    if not _admin_authed(request):
+        return HTMLResponse(LOGIN_HTML)
+    return HTMLResponse(ADMIN_HTML)
+
+
+@app.post("/admin/login")
+def admin_login(password: str = Form("")):
+    if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
+        resp = Response(status_code=303)
+        resp.headers["Location"] = "/admin"
+        resp.set_cookie(ADMIN_COOKIE, _admin_token(), httponly=True,
+                        samesite="lax", max_age=86400 * 7)
+        return resp
+    resp = Response(LOGIN_HTML, status_code=200)
+    return resp
+
+
+@app.get("/admin/logout")
+def admin_logout():
+    resp = Response(status_code=303)
+    resp.headers["Location"] = "/admin"
+    resp.delete_cookie(ADMIN_COOKIE)
+    return resp
+
+
+@app.get("/admin/api/summary")
+def admin_summary(request: Request, days: int = 7):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    log_store.maybe_purge()
+    return log_store.stats(days=min(max(days, 1), 30))
+
+
+@app.get("/admin/api/logs")
+def admin_logs(request: Request, days: int = 7, status: str = "",
+               limit: int = 300, offset: int = 0):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    return log_store.query(days=min(max(days, 1), 30),
+                           status=status or None,
+                           limit=min(limit, 100000), offset=offset)
+
+
+@app.get("/admin/api/export")
+def admin_export(request: Request, days: int = 30):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    return Response(content=log_store.export_json(days=min(max(days, 1), 30)),
+                    media_type="application/json")
+
+log_store.maybe_purge(force=True)  # 启动即清理过期日志
+
 PRIVACY_NOTE = {
     True: ("隐私说明: 转换在您自己的服务器上完成, 文件转换后即删。未能自动识别的新格式"
            "会把第 1 页渲染图发送给您所配置的外部视觉模型辅助识别, 识别成功后仅保存"
            "不含任何数据的列模板(描述符)。"),
     False: ("隐私说明: 转换在您自己的服务器上完成, 文件转换后即删, 不发送任何数据给第三方。"),
 }
+
+ADMIN_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>转换日志后台 · bank2excel</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#10141c;color:#e6e9ef;margin:0}
+  .wrap{max-width:1100px;margin:0 auto;padding:22px 14px 40px}
+  .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px;flex-wrap:wrap}
+  h1{font-size:19px;margin:0}
+  .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  select,button,input{background:#1a2130;color:#e6e9ef;border:1px solid #2b3346;border-radius:8px;padding:7px 11px;font-size:13px}
+  button{cursor:pointer}button:hover{background:#232c40}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+  .c{background:#171d2b;border:1px solid #2b3346;border-radius:12px;padding:12px 14px}
+  .c .v{font-size:21px;font-weight:700}
+  .c .k{font-size:12px;color:#8b94a7;margin-top:2px}
+  .c.ok .v{color:#4ade80}.c.fail .v{color:#f87171}
+  .chart{background:#171d2b;border:1px solid #2b3346;border-radius:12px;padding:14px;margin-bottom:14px}
+  .chart .t{font-size:12.5px;color:#8b94a7;margin-bottom:8px}
+  .bars{display:flex;align-items:flex-end;gap:5px;height:90px}
+  .bars>div{flex:1;background:#3b82f6;border-radius:4px 4px 0 0;min-height:2px;position:relative}
+  .bars>div span{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:10px;color:#8b94a7}
+  .bars>div b{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:10px;color:#e6e9ef}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;background:#171d2b;border:1px solid #2b3346;border-radius:12px;overflow:hidden}
+  th{background:#1a2130;color:#8b94a7;text-align:left;padding:8px 9px;font-weight:600;white-space:nowrap}
+  td{padding:7px 9px;border-top:1px solid #232b3d;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}
+  tr:hover td{background:#1a2233}
+  .ok{color:#4ade80}.fail{color:#f87171}.m{color:#8b94a7}
+</style></head><body><div class="wrap">
+<div class="head">
+  <h1>转换日志后台</h1>
+  <div class="tools">
+    <select id="days"><option value="1">今天</option><option value="7" selected>近 7 天</option><option value="30">近 30 天</option></select>
+    <select id="st"><option value="">全部状态</option><option value="ok">成功</option><option value="fail">失败</option></select>
+    <input id="q" placeholder="搜文件名" style="width:150px">
+    <button onclick="load()">刷新</button>
+    <label style="font-size:12.5px;color:#8b94a7"><input type="checkbox" id="auto" checked style="margin-right:4px">30s 自动</label>
+    <button onclick="exportCsv()">导出 CSV</button>
+    <button onclick="location='/admin/logout'">退出</button>
+  </div>
+</div>
+<div class="cards" id="cards"></div>
+<div class="chart"><div class="t">每日转换量(近 14 天)</div><div class="bars" id="bars"></div><div style="height:18px"></div></div>
+<table id="tbl"><thead><tr>
+  <th>请求时间</th><th>文件</th><th>状态</th><th>失败阶段</th><th>通道</th>
+  <th>耗时</th><th>行数</th><th>GLM-OCR</th><th>视觉兜底</th><th>百度点数</th><th>错误</th>
+</tr></thead><tbody></tbody></table>
+<script>
+function fmtT(s){return s>=60?(s/60).toFixed(1)+' 分':s.toFixed(1)+' 秒'}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function load(){
+  const days=document.getElementById('days').value, st=document.getElementById('st').value,
+        q=document.getElementById('q').value.trim();
+  const [sum, logs] = await Promise.all([
+    fetch('/admin/api/summary?days='+days).then(r=>r.json()),
+    fetch('/admin/api/logs?days='+days+'&status='+st+'&limit=300').then(r=>r.json())
+  ]);
+  const rate = sum.total ? Math.round(sum.ok*100/sum.total) : '-';
+  document.getElementById('cards').innerHTML = [
+    ['总数', sum.total, ''], ['成功', sum.ok, 'ok'], ['失败', sum.fail, 'fail'],
+    ['成功率', rate==='-'?'-':rate+'%', ''],
+    ['总耗时', fmtT(sum.duration_sum), ''],
+    ['GLM-OCR', sum.glm.calls+' 次 / '+(sum.glm.prompt+sum.glm_completion).toLocaleString()+' tok', ''],
+    ['视觉兜底', sum.vlm.calls+' 次 / '+(sum.vlm.prompt+sum.vlm_completion).toLocaleString()+' tok', ''],
+    ['百度', sum.baidu_calls+' 次 / '+sum.baidu_points+' 点', ''],
+  ].map(c=>'<div class="c '+c[2]+'"><div class="v">'+c[1]+'</div><div class="k">'+c[0]+'</div></div>').join('');
+  const mx = Math.max(1, ...sum.daily.map(d=>d.total));
+  document.getElementById('bars').innerHTML = sum.daily.map(d=>
+    '<div style="height:'+Math.max(3,d.total*100/mx)+'%"><b>'+d.total+'</b><span>'+d.day.slice(5)+'</span></div>').join('');
+  const q2=q.toLowerCase();
+  const tb=document.querySelector('#tbl tbody');
+  tb.innerHTML = logs.filter(l=>!q2||String(l.filename||'').toLowerCase().includes(q2))
+    .map(l=>'<tr><td>'+esc(l.ts)+'</td><td title="'+esc(l.filename)+'">'+esc((l.filename||'').slice(0,32))+
+      '</td><td class="'+l.status+'">'+(l.status==='ok'?'成功':'失败')+'</td><td class="m">'+esc(l.stage||'-')+
+      '</td><td class="m">'+esc(l.mode||'-')+'</td><td>'+fmtT(l.duration_s)+'</td><td>'+(l.rows??'-')+
+      '</td><td class="m">'+(l.glm_calls?(l.glm_calls+'次/'+(l.glm_prompt+l.glm_completion).toLocaleString()):'-')+
+      '</td><td class="m">'+(l.vlm_calls?(l.vlm_calls+'次/'+(l.vlm_prompt+l.vlm_completion).toLocaleString()):'-')+
+      '</td><td class="m">'+(l.baidu_calls?(l.baidu_calls*25+' 点'):'-')+
+      '</td><td class="m" title="'+esc(l.error)+'">'+esc((l.error||'').slice(0,26))+'</td></tr>').join('')
+    || '<tr><td colspan="11" style="text-align:center;color:#8b94a7;padding:20px">无记录</td></tr>';
+}
+async function exportCsv(){
+  const days=document.getElementById('days').value;
+  const logs = await fetch('/admin/api/logs?days='+days+'&limit=100000').then(r=>r.json());
+  const cols = ['ts','filename','size','status','stage','mode','duration_s','rows','glm_calls','glm_prompt','glm_completion','vlm_calls','vlm_prompt','vlm_completion','baidu_calls','error'];
+  const csv = '\ufeff' + cols.join(',') + '\n' + logs.map(l=>cols.map(c=>'"'+String(l[c]??'').replace(/"/g,'""')+'"').join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='convert-logs-'+Date.now()+'.csv';a.click();
+}
+document.getElementById('days').onchange=load;
+document.getElementById('st').onchange=load;
+document.getElementById('q').oninput=load;
+setInterval(()=>{if(document.getElementById('auto').checked)load()},30000);
+load();
+</script></div></body></html>
+"""
+
+LOGIN_HTML = r"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>后台登录</title>
+<style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#10141c;color:#e6e9ef}
+.login{max-width:340px;margin:14vh auto;background:#171d2b;border:1px solid #2b3346;border-radius:14px;padding:26px}
+input{width:100%;margin:10px 0 14px;background:#1a2130;color:#e6e9ef;border:1px solid #2b3346;border-radius:8px;padding:10px;font-size:14px}
+.btn{width:100%;background:#3b82f6;border:0;color:#fff;padding:10px;border-radius:8px;font-weight:600;cursor:pointer}
+h2{font-size:17px;margin:0 0 6px}.m{color:#8b94a7;font-size:12.5px}</style></head><body>
+<div class="login"><h2>转换日志后台</h2><div class="m">请输入管理密码</div>
+<form method="post" action="/admin/login"><input type="password" name="password" autofocus>
+<button class="btn" type="submit">登录</button></form></div></body></html>
+"""
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">

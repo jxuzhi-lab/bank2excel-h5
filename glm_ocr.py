@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 from html.parser import HTMLParser
@@ -124,13 +125,14 @@ def _split_clips(pdf_path, page_index, depth):
     return clips
 
 
-def _ocr_page_resilient(pdf_path, page_index, depth=0, max_depth=2, zoom=None):
+def _ocr_page_resilient(pdf_path, page_index, depth=0, max_depth=2, zoom=None,
+                        usage=None):
     """单页识别, 带退化自愈:
     截断页(生成退化)递归对半拆分重试(退化跟内容走, 拆分后每次生成都重新
     开始, 多数可跳出); 每级用完整行抢救(丢弃列数不符的畸形尾行), 重叠区
     按行签名去重。返回 (header, rows, salvaged: bool, hard_fail: bool)。"""
     b64 = _render_page(pdf_path, page_index, zoom=zoom)
-    md, comp, err = _call_layout_parsing(b64)
+    md, comp, err = _call_layout_parsing(b64, usage=usage)
     if err is not None:
         return None, [], False, True
     header, rows, trunc = _parse_page_md(md)
@@ -150,7 +152,7 @@ def _ocr_page_resilient(pdf_path, page_index, depth=0, max_depth=2, zoom=None):
     hdr = header
     for clip in _split_clips(pdf_path, page_index, depth + 1):
         b64i = _render_page(pdf_path, page_index, clip=clip, zoom=zoom)
-        mdi, compi, erri = _call_layout_parsing(b64i)
+        mdi, compi, erri = _call_layout_parsing(b64i, usage=usage)
         if erri is not None:
             salvaged = True
             continue
@@ -183,7 +185,7 @@ def _modal_len(rows):
     return Counter(len(r) for r in rows).most_common(1)[0][0]
 
 
-def _call_layout_parsing(b64, retries=3):
+def _call_layout_parsing(b64, retries=3, usage=None):
     body = json.dumps({"model": "glm-ocr",
                        "file": "data:image/jpeg;base64," + b64}).encode()
     last = None
@@ -199,6 +201,11 @@ def _call_layout_parsing(b64, retries=3):
             if isinstance(md, list):
                 md = md[0] if md else ""
             u = resp.get("usage", {})
+            if usage is not None:
+                with _usage_lock:
+                    usage["glm_calls"] = usage.get("glm_calls", 0) + 1
+                    usage["glm_prompt"] = usage.get("glm_prompt", 0) + int(u.get("prompt_tokens", 0))
+                    usage["glm_completion"] = usage.get("glm_completion", 0) + int(u.get("completion_tokens", 0))
             return md or "", int(u.get("completion_tokens", 0)), None
         except urllib.error.HTTPError as e:
             err = e.read().decode("utf-8", "replace")[:200]
@@ -213,7 +220,11 @@ def _call_layout_parsing(b64, retries=3):
     return "", 0, last
 
 
-def parse_scanned_pdf(pdf_path, page_count, debug=False):
+_usage_lock = threading.Lock()
+
+
+def parse_scanned_pdf(pdf_path, page_count, debug=False, usage=None):
+    """usage: 可选 dict, 就地累计 GLM-OCR 真实 token 消耗(线程安全)。"""
     """GLM-OCR 主路径入口(逐页, 截断页自动拆分重试)。
 
     返回 dict: {"pages": [{index, header, rows, salvaged, hard_fail}...],
@@ -229,7 +240,8 @@ def parse_scanned_pdf(pdf_path, page_count, debug=False):
     errors = []
 
     def work(i):
-        hdr, rows, salvaged, hard = _ocr_page_resilient(pdf_path, i)
+        hdr, rows, salvaged, hard = _ocr_page_resilient(
+            pdf_path, i, usage=usage)
         return i, {"index": i, "header": hdr, "rows": rows,
                    "salvaged": salvaged, "hard_fail": hard}
 
@@ -316,7 +328,7 @@ def build_engine_records(pages):
                              "wechat": False}
 
 
-def refine_gaps(pdf_path, pages, max_rounds=2, debug=False):
+def refine_gaps(pdf_path, pages, max_rounds=2, debug=False, usage=None):
     """余额链断点驱动的定向重试:
     断点行 → 映射回所在页(按页行数前缀和) → 该页整页重新识别(跨次调用存在
     非确定性, 实测同一退化页跨轮可恢复) → 重组 → 再检测; 直至无断点或轮次用尽。
@@ -325,10 +337,10 @@ def refine_gaps(pdf_path, pages, max_rounds=2, debug=False):
         try:
             header, records, counts = _merge_pages(pages)
         except RuntimeError:
-            return pages, []
+            return pages, [], []
         gaps = balance_gaps(header, records)
         if not gaps:
-            return pages, []
+            return pages, [], []
         # 断点所在记录序号(1-based) → 页索引
         bad_page_idx = set()
         cum = 0
@@ -338,7 +350,7 @@ def refine_gaps(pdf_path, pages, max_rounds=2, debug=False):
                     bad_page_idx.add(pi)
             cum += cnt
         if not bad_page_idx:
-            return pages, gaps
+            return pages, gaps, baidu_pages
         if debug:
             print(f"[GLM-OCR] 第{_round+1}轮定向重试: 断点{gaps} → 页 "
                   f"{sorted(i+1 for i in bad_page_idx)}", flush=True)
@@ -346,7 +358,7 @@ def refine_gaps(pdf_path, pages, max_rounds=2, debug=False):
             # 重试轮换渲染倍率: 退化与 tokenization 相关, 改变切词可能跳出循环
             z = float(os.environ.get("GLM_OCR_ZOOM", "2.5")) * (1.25 if _round % 2 == 0 else 0.8)
             hdr2, rows2, salv2, hard2 = _ocr_page_resilient(
-                pdf_path, pi, zoom=z)
+                pdf_path, pi, zoom=z, usage=usage)
             if rows2 and not hard2:
                 pages[pi] = {"index": pi, "header": hdr2 or pages[pi]["header"],
                              "rows": rows2, "salvaged": salv2,
@@ -393,7 +405,8 @@ def refine_gaps(pdf_path, pages, max_rounds=2, debug=False):
     if target is None:
         return pages, gaps, []
     redone = baidu_ocr.redo_pages(pdf_path, sorted(bad_page_idx),
-                                  target_header=target, debug=debug)
+                                  target_header=target, debug=debug,
+                                  usage=usage)
     baidu_pages = []
     for pi, res in redone.items():
         if pi < len(pages) and res["records"]:

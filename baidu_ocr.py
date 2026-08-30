@@ -269,7 +269,7 @@ def _postfix_row(row, target_header):
     return row
 
 
-def redo_pages(pdf_path, page_indexes, target_header, debug=False):
+def redo_pages(pdf_path, page_indexes, target_header, debug=False, usage=None):
     """百度兜底入口: 逐页 表格识别→网格重组→对齐目标表头。
     返回 {page_index: {"header", "records"}}, 失败页不在结果中。"""
     results = {}
@@ -277,6 +277,8 @@ def redo_pages(pdf_path, page_indexes, target_header, debug=False):
     for pi in sorted(page_indexes)[:cap]:
         try:
             cells = table_ocr_cells(pdf_path, pi)
+            if usage is not None:
+                usage["baidu_calls"] = usage.get("baidu_calls", 0) + 1  # 25 点/次
             recs = reconstruct_records(cells, target_header)
             if recs:
                 results[pi] = {"header": list(target_header), "records": recs}

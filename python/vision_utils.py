@@ -61,6 +61,9 @@ def _api_config():
     return base, key, model
 
 
+_LAST_API_USAGE = __import__("threading").local()  # 每请求线程累计 api 视觉 token(服务端日志用)
+
+
 class VisionDisabledError(RuntimeError):
     """当前环境未配置任何可用的视觉能力(无 vision.js/node 或显式禁用)。"""
 
@@ -243,6 +246,11 @@ def _api_vision_call(png_path, prompt, retries=1, timeout=120):
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
+            _u = body.get("usage") or {}
+            _prev = getattr(_LAST_API_USAGE, "usage", None) or {"calls": 0, "prompt": 0, "completion": 0}
+            _LAST_API_USAGE.usage = {"calls": _prev["calls"] + 1,
+                                     "prompt": _prev["prompt"] + int(_u.get("prompt_tokens", 0)),
+                                     "completion": _prev["completion"] + int(_u.get("completion_tokens", 0))}
             msg = (body.get("choices") or [{}])[0].get("message", {})
             out = (msg.get("content") or "").strip()
             if not out:

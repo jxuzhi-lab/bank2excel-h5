@@ -12,6 +12,10 @@ services:
       - TZ=Asia/Shanghai
       # 描述符缓存目录(挂卷持久化: 新格式识别一次, 之后零成本秒转)
       - DESCRIPTOR_CACHE_DIR=/data/descriptors
+      # 日志后台管理密码(/admin 页面登录, 必配, 否则后台禁用)
+      - ADMIN_PASSWORD=change-me
+      # 转换日志库路径(默认 <程序目录>/logs/convert.db)
+      # - LOG_DB_PATH=/data/logs/convert.db
       # ---- 视觉兜底(可选): 三行都配上才启用, 未知格式自动走 VLM 识别 ----
       # - BANK_PDF_VISION_PROVIDER=api
       # - BANK_PDF_VISION_API_BASE=https://open.bigmodel.cn/api/paas/v4
@@ -23,5 +27,6 @@ services:
       # - MAX_CONCURRENT=2            # 同时转换数
     volumes:
       - ./descriptors:/data/descriptors
+      - ./logs:/app/logs
     mem_limit: 1g          # 防止极端大文件吃满内存
     # 可选: 上传上限调大(默认 uvicorn 无 body 限制, 引擎侧已限 200MB)

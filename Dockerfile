@@ -23,6 +23,7 @@ COPY server.py .
 COPY ocr_layer.py .
 COPY glm_ocr.py .
 COPY baidu_ocr.py .
+COPY log_store.py .
 COPY python/ python/
 
 # 非 root 运行(更安全)

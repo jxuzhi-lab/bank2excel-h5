@@ -5,6 +5,27 @@
 
 ---
 
+
+## ⚠️ 交接速览（2026-08-30 深夜, 长期无人接管前的最终状态）
+
+**全部已上线并验证**：dual 通道 OCR（GLM-OCR 主路径 + 百度定向兜底，民生压测 401/401 满分）、
+网页多文件队列 UI（上限 10/串行转换/每文件密码/删除/刷新持久化 IndexedDB）、
+转换日志后台 `/admin`（ADMIN_PASSWORD 见 VPS compose；记录时间/文件/耗时/通道/三路 API token，
+SQLite 存于挂卷 ./logs，保留 30 天自动清理；支持筛选/搜索/CSV 导出/30s 自动刷新）。
+
+**长期无人接管注意事项**：
+1. 三把 key 全在 VPS compose：智谱(GLM-OCR+VLM)、百度(体验额度约余 900 次≈900 页)。
+   百度额度用完后自动只剩 GLM-OCR 主路径（功能不中断，质量上限降为"缺页标记"级）。
+2. 智谱 600 万 token 赠送额度：按当前用量够数年。用尽后 glm-ocr 转按量 0.2 元/百万。
+3. 磁盘占用：logs 挂卷（30 天自动清理）+ descriptors 挂卷（每格式几 KB）+ 容器日志
+   `docker logs`（uvicorn 访问日志会持续增长，长期不接管可定期
+   `sudo truncate -s 0 $(sudo docker inspect --format='{{.LogPath}}' bank2excel)`）。
+4. 重启/重建不丢数据：descriptors 与 logs 都是挂卷。但重建后检查
+   `sudo chown -R 1000:1000 /opt/bank2excel-h5/{logs,descriptors}`（root 挂载目录坑）。
+5. 出问题先看：`sudo docker logs --tail 100 bank2excel` + `/admin` 失败行 + 诊断包。
+
+---
+
 ## ⚠️ 新环境速览（2026-08-29 迁移至本机维护，先读这段）
 
 - **Python**：系统 `python` 只有 3.7.8（过旧，缺 pymupdf≥1.24，跑不了引擎，勿直接用）。
