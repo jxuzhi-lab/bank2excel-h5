@@ -21,6 +21,8 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r re
 # 引擎(server.py 运行时 import shim → extract_bank_statement)
 COPY server.py .
 COPY ocr_layer.py .
+COPY glm_ocr.py .
+COPY baidu_ocr.py .
 COPY python/ python/
 
 # 非 root 运行(更安全)
