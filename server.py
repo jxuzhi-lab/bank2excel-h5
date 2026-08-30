@@ -293,30 +293,34 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <style>
   *{box-sizing:border-box}
   body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f3f5f9;margin:0;color:#1f2328;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:760px;margin:0 auto;padding:28px 16px 48px}
-  h1{font-size:22px;margin:0 0 4px}
-  .sub{color:#6b7280;font-size:13px;line-height:1.7;margin-bottom:20px}
-  .card{background:#fff;border:1px solid #e7eaf0;border-radius:14px;box-shadow:0 1px 3px rgba(16,24,40,.05);padding:20px;margin-bottom:14px}
-  #drop{border:2px dashed #c3cdda;border-radius:12px;padding:30px 16px;text-align:center;cursor:pointer;transition:all .15s}
+  .wrap{max-width:760px;margin:0 auto;padding:24px 14px 44px}
+  .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  h1{font-size:21px;margin:0}
+  .sub{color:#8a94a6;font-size:12.5px;margin-top:3px}
+  .helpbtn{background:#fff;border:1px solid #d5dbe3;color:#344054;border-radius:999px;
+    padding:6px 14px;font-size:13px;cursor:pointer;flex-shrink:0;font-weight:600}
+  .helpbtn:hover{background:#f6f8fb}
+  .card{background:#fff;border:1px solid #e7eaf0;border-radius:14px;box-shadow:0 1px 3px rgba(16,24,40,.05);padding:18px;margin-bottom:14px}
+  #drop{border:2px dashed #c3cdda;border-radius:12px;padding:26px 14px;text-align:center;cursor:pointer;transition:all .15s}
   #drop:hover{border-color:#1a73e8;background:#f5f9ff}
   #drop.over{border-color:#1a73e8;background:#eef5ff;transform:scale(1.01)}
-  #drop .big{font-size:16px;font-weight:600;margin-bottom:6px}
-  #drop .hint{color:#8a94a6;font-size:13px}
+  #drop .big{font-size:15.5px;font-weight:600;margin-bottom:5px}
+  #drop .hint{color:#8a94a6;font-size:12.5px}
   #drop .hint.warn{color:#d92d20;font-weight:600}
   .queue{margin-top:4px}
-  .item{display:flex;align-items:center;gap:10px;padding:11px 4px;border-bottom:1px solid #f0f2f6;font-size:13px}
+  .item{display:flex;align-items:center;gap:9px;padding:10px 2px;border-bottom:1px solid #f0f2f6;font-size:13px}
   .item:last-child{border-bottom:0}
-  .ficon{width:34px;height:34px;border-radius:8px;background:#eef3fb;color:#1a73e8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0}
+  .ficon{width:32px;height:32px;border-radius:8px;background:#eef3fb;color:#1a73e8;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;flex-shrink:0}
   .fmeta{flex:1;min-width:0}
   .fname{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fmsg{color:#8a94a6;font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fmsg.err{color:#d92d20}
   .fmsg.ok{color:#12805c}
-  .badge{flex-shrink:0;font-size:12px;padding:3px 10px;border-radius:999px;background:#f2f4f7;color:#667085;font-weight:600}
+  .badge{flex-shrink:0;font-size:11.5px;padding:3px 9px;border-radius:999px;background:#f2f4f7;color:#667085;font-weight:600}
   .badge.run{background:#e5f0ff;color:#1a73e8}
   .badge.ok{background:#e6f6ef;color:#12805c}
   .badge.fail{background:#fdecea;color:#d92d20}
-  .pin{flex-shrink:0;width:112px;border:1px solid #d5dbe3;border-radius:7px;padding:6px 9px;font-size:12.5px;outline:none;transition:border .15s}
+  .pin{flex-shrink:0;width:96px;border:1px solid #d5dbe3;border-radius:7px;padding:6px 8px;font-size:12.5px;outline:none;transition:border .15s}
   .pin:focus{border-color:#1a73e8;box-shadow:0 0 0 3px rgba(26,115,232,.12)}
   .pin:disabled{background:#f6f8fb;color:#98a2b3}
   .btn{background:#1a73e8;color:#fff;border:0;padding:10px 22px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
@@ -328,21 +332,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .linkbtn.del{color:#d92d20;font-size:15px;text-decoration:none;font-weight:700;padding:2px 6px;border-radius:6px}
   .linkbtn.del:hover{background:#fdecea}
   .linkbtn.del:disabled{color:#d0d5dd;cursor:not-allowed;background:none}
-  .bar{display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:10px}
+  .bar{display:flex;align-items:center;justify-content:space-between;margin-top:14px;gap:10px}
   .progress{color:#667085;font-size:13px}
   .empty{color:#98a2b3;font-size:13px;text-align:center;padding:14px 0 4px}
-  .err-detail{background:#fff8f7;border:1px solid #f4d3cf;border-radius:8px;padding:9px 11px;margin-top:7px;font-size:12.5px;color:#7a271a;line-height:1.6}
-  .foot-note{color:#98a2b3;font-size:12px;margin-top:10px}
+  .err-detail{background:#fff8f7;border:1px solid #f4d3cf;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:12.5px;color:#7a271a;line-height:1.55}
+  /* ---- 帮助弹窗(二级界面) ---- */
+  #mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:flex-end;justify-content:center;z-index:50}
+  #mask.show{display:flex}
+  #help{background:#fff;width:100%;max-width:560px;max-height:82vh;overflow-y:auto;
+    border-radius:18px 18px 0 0;padding:20px 20px 28px}
+  @media(min-width:600px){#mask{align-items:center}#help{border-radius:16px;padding-bottom:20px}}
+  #help h2{font-size:17px;margin:0 0 12px;display:flex;justify-content:space-between;align-items:center}
+  #help .x{background:none;border:none;font-size:20px;color:#667085;cursor:pointer;padding:2px 8px}
+  #help h3{font-size:13.5px;margin:14px 0 6px;color:#1a73e8}
+  #help p{font-size:13px;color:#475467;line-height:1.75;margin:0 0 4px}
+  #help .hl{background:#eef5ff;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#3b4453;line-height:1.7;margin-top:12px}
 </style></head><body><div class="wrap">
-<h1>对账单 PDF → Excel</h1>
-<div class="sub">私有转换服务 · 文件转换完即删 · __PRIVACY_NOTE__</div>
+<div class="head">
+  <div><h1>对账单 PDF → Excel</h1><div class="sub">文件转换完即删 · 私有部署</div></div>
+  <button class="helpbtn" id="helpbtn">ⓘ 帮助</button>
+</div>
 <div class="card">
   <div id="drop">
-    <div class="big">点选或拖入对账单 PDF（可多选, 最多 10 个）</div>
-    <div class="hint" id="hint">加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB · 队列本地自动保存, 刷新不丢失</div>
+    <div class="big">点选或拖入对账单 PDF</div>
+    <div class="hint" id="hint">可多选, 最多 10 个 · 单个 ≤ 200MB</div>
   </div>
   <input type="file" id="f" accept=".pdf" multiple hidden>
-  <div class="foot-note">加密的 PDF（如华夏银行）请在该文件行内的密码框填写打开密码; 未填则按无密码转换。密码仅保存在本机浏览器, 随文件转换使用, 不上传存储。</div>
 </div>
 <div class="card">
   <div class="queue" id="queue"><div class="empty">队列为空 — 先添加文件</div></div>
@@ -354,19 +369,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div id="mask"><div id="help">
+  <h2>使用帮助 <button class="x" id="helpx">✕</button></h2>
+  <h3>基本流程</h3>
+  <p>1. 点选或拖入 PDF（可多选, 最多 10 个）→ 2. 加密的文件在行内密码框填入打开密码 → 3. 点"开始转换", 逐个排队转换 → 4. 完成后自动下载, 也可点"下载 xlsx"重新下载。</p>
+  <h3>密码说明</h3>
+  <p>加密 PDF（如华夏银行）在该文件行内的密码框填写打开密码, 未填则按无密码转换。密码只保存在你自己的浏览器里、随转换使用, 服务器不做任何存储。</p>
+  <h3>队列与刷新</h3>
+  <p>队列自动保存在本机浏览器（IndexedDB）, 刷新页面不丢失: 待转换的文件、密码、失败原因、已完成的结果都会恢复, 可重新下载。点每行 ✕ 可单独移除。</p>
+  <h3>失败怎么办</h3>
+  <p>失败的文件会显示原因和建议。若是新格式识别失败, 点"下载诊断包"（脱敏 JSON, 不含真实数据）发给维护者, 下个版本即可支持。</p>
+  <div class="hl">__PRIVACY_NOTE__</div>
+</div></div>
 <script>
 const MAXQ=10;
 const drop=document.getElementById('drop'),hint=document.getElementById('hint'),f=document.getElementById('f'),
       queueEl=document.getElementById('queue'),prog=document.getElementById('prog'),
       startBtn=document.getElementById('start'),clearBtn=document.getElementById('clear');
-const HINT_DEFAULT='加入队列后点"开始转换"逐个排队转换 · 单个文件 ≤ 200MB · 队列本地自动保存, 刷新不丢失';
+const HINT_DEFAULT='可多选, 最多 10 个 · 单个 ≤ 200MB';
 let items=[];  // {file, pwd, status, msg, blob, detail}
 let running=false;
 
-// ---- IndexedDB 持久化: 文件/密码/状态/结果跨刷新保留 ----
+// ---- IndexedDB 持久化 ----
 let _dbPromise=null;
 function idb(){
-  // 单例连接: 每次开新连接会堆积, 挂起后续 open/delete 请求(踩坑)
   if(!_dbPromise){
     _dbPromise=new Promise((res,rej)=>{
       const r=indexedDB.open('b2xq',1);
@@ -386,7 +412,7 @@ async function persist(){
     items.forEach((it,i)=>tx.objectStore('items').put({
       id:i, file:it.file, pwd:it.pwd||'', status:it.status,
       msg:it.msg||'', blob:it.blob||null, detail:it.detail||null }));
-  }catch(e){/* 存储失败不影响功能, 仅失去刷新恢复 */}
+  }catch(e){}
 }
 async function restore(){
   try{
@@ -396,7 +422,7 @@ async function restore(){
     rq.onsuccess=()=>{
       items=(rq.result||[]).sort((a,b)=>a.id-b.id).map(x=>({
         file:x.file, pwd:x.pwd||'',
-        status:x.status==='run'?'pending':x.status,  // 刷新时被打断的转换回到等待
+        status:x.status==='run'?'pending':x.status,
         msg:x.msg, blob:x.blob||null, detail:x.detail||null,
       })).map(x=>({...x, blobUrl:x.blob?URL.createObjectURL(x.blob):null}));
       render();
@@ -404,6 +430,11 @@ async function restore(){
     rq.onerror=()=>render();
   }catch(e){render()}
 }
+// ---- 帮助弹窗 ----
+const mask=document.getElementById('mask');
+document.getElementById('helpbtn').onclick=()=>mask.classList.add('show');
+document.getElementById('helpx').onclick=()=>mask.classList.remove('show');
+mask.addEventListener('click',e=>{if(e.target===mask)mask.classList.remove('show')});
 // ---- 渲染 ----
 function fmtSize(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,n/1024).toFixed(0)+' KB'}
 function flashHint(msg){
@@ -454,7 +485,7 @@ function addFiles(files){
     items.push({file:f,pwd:'',status:'pending',msg:null,blob:null,blobUrl:null,detail:null});
     added++;
   }
-  if(skipped)flashHint('队列上限 '+MAXQ+' 个, 已跳过 '+skipped+' 个文件 — 先转换或清空后再添加');
+  if(skipped)flashHint('队列上限 '+MAXQ+' 个, 已跳过 '+skipped+' 个');
   if(added)persist();
   render();
 }
