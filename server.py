@@ -38,7 +38,8 @@ sys.path.insert(0, os.path.join(BASE, "python"))
 
 import extract_bank_statement as eng  # noqa: E402  完整引擎(PYODIDE 未设 → CPython 全功能)
 import vision_utils as vu  # noqa: E402
-import ocr_layer  # noqa: E402  服务端扫描件 OCR 夹心层(OCR_ENABLED 可关)
+import ocr_layer  # noqa: E402  服务端扫描件 RapidOCR 夹心层(OCR_ENABLED 可关)
+import glm_ocr  # noqa: E402  GLM-OCR 主路径(GLM_OCR_KEY 配置后启用)
 
 app = FastAPI(title="bank2excel-h5 server", docs_url=None, redoc_url=None)
 
@@ -104,6 +105,18 @@ def _rate_limited(ip):
         return False
 
 
+def _diag_actual_placeholder():
+    pass
+
+
+def _write_glm_xlsx(header_names, records, out_path):
+    """GLM-OCR 直接产出: 复用引擎写出链(typed_records 类型化 + 流式 xlsx)。"""
+    typed = eng.typed_records(header_names, records)
+    aligns, widths = eng._output_layout(header_names)
+    eng._write_xlsx(out_path, "对账单", header_names, typed, aligns, widths,
+                    keep_text=False)
+
+
 def _diag_payload(out_path, exc):
     """失败时聚合结构化错误: message/stage/suggestion + 诊断包 JSON(无 PNG)。"""
     detail = {"message": str(exc).split("\n")[-1][:300]}
@@ -161,32 +174,88 @@ def convert(request: Request, file: UploadFile = File(...), password: str = ""):
             out_path = os.path.join(td, "out.xlsx")
             with open(pdf_path, "wb") as f:
                 f.write(data)
-            # 扫描件 OCR 夹心层(2026-08-29): 含无文字层的页时, 先 OCR 成
-            # 不可见文字夹心层再走引擎 —— 对纯文字层 PDF 零开销。
-            convert_src, ocr_pages = pdf_path, 0
+            # 扫描件 OCR(2026-08-30): 含无文字层的页时:
+            #   GLM-OCR 主路径(glm_ocr.py): 逐页识别+退化自愈(截断页递归拆分
+            #   重试+完整行抢救)。全部页有效 → 直接经引擎写出链产出 xlsx
+            #   (无水印污染, 表头结构准确); 抢救过的页附余额链断点警告头。
+            #   硬失败页(重试后仍无数据) → 422 结构化错误(宁缺勿错)。
+            #   未配 GLM_OCR_KEY → 整体回退 RapidOCR 夹心层(ocr_layer.py, v1)。
+            # 对纯文字层 PDF 零开销。
+            glm_direct = False
+            ocr_warning = ""
+            convert_src, ocr_pages, ocr_mode = pdf_path, 0, ""
             if OCR_ENABLED:
                 try:
                     _doc = ocr_layer.pymupdf.open(pdf_path)
                     _need = ocr_layer.needs_ocr(_doc, max_pages=ocr_layer.PAGE_CAP)
+                    _n_pages = len(_doc)
                     _doc.close()
                     if _need:
-                        scan_pdf = os.path.join(td, "scan_sandwich.pdf")
-                        ocr_pages, _total, _secs = ocr_layer.build_text_layer(
-                            pdf_path, scan_pdf)
-                        if ocr_pages:
-                            convert_src = scan_pdf
+                        glm = None
+                        if glm_ocr.get_key():
+                            try:
+                                glm = glm_ocr.parse_scanned_pdf(pdf_path, _n_pages)
+                            except Exception as ge:  # noqa: BLE001
+                                print(f"[提示] GLM-OCR 异常, 转夹心层: {ge}", flush=True)
+                                glm = None
+                        if glm is not None:
+                            bad_idx = [p["index"] + 1 for p in glm["pages"]
+                                       if p["hard_fail"]]
+                            if glm["errors"]:
+                                print(f"[提示] GLM-OCR: {glm['errors']}", flush=True)
+                            if bad_idx:
+                                raise HTTPException(
+                                    422, detail={
+                                        "message":
+                                            f"第 {bad_idx} 页 OCR 识别失败(重试后仍无有效"
+                                            "数据), 为保证数据完整未输出结果",
+                                        "stage": "ocr",
+                                        "suggestion": "请重试一次; 若持续失败请导出诊断反馈",
+                                        "fail_pages": bad_idx})
+                            # 余额链断点驱动的定向重试(跨轮非确定性可恢复静默漏行);
+                            # 仍断则升级百度表格识别兜底(仅断点页)
+                            glm["pages"], gaps, baidu_pgs = glm_ocr.refine_gaps(
+                                pdf_path, glm["pages"], debug=True)
+                            _hdr, _recs, _meta = glm_ocr.build_engine_records(glm["pages"])
+                            _write_glm_xlsx(_hdr, _recs, out_path)
+                            glm_direct = True
+                            ocr_pages = _n_pages
+                            ocr_mode = ("glm-ocr+baidu" if baidu_pgs else "glm-ocr")
+                            salv = [p["index"] + 1 for p in glm["pages"]
+                                    if p["salvaged"] and p.get("source") != "baidu"]
+                            if salv or gaps or baidu_pgs:
+                                parts = []
+                                if salv:
+                                    parts.append(f"第 {salv} 页识别曾截断已抢救")
+                                if baidu_pgs:
+                                    parts.append(f"第 {baidu_pgs} 页已由表格识别兜底重做")
+                                parts.append(
+                                    f"余额链断点行: {gaps[:8]} — 请核对断点处是否遗漏记录"
+                                    if gaps else "余额链完整")
+                                ocr_warning = "; ".join(parts)
+                        if not glm_direct:
+                            scan_pdf = os.path.join(td, "scan_sandwich.pdf")
+                            ocr_pages, _total, _secs = ocr_layer.build_text_layer(
+                                pdf_path, scan_pdf)
+                            if ocr_pages:
+                                convert_src = scan_pdf
+                                ocr_mode = ocr_mode or "ocr-sandwich"
+                except HTTPException:
+                    raise
                 except Exception as oe:  # noqa: BLE001 (OCR 失败按原样走引擎报扫描件错误)
                     ocr_pages = -1
-                    print(f"[提示] OCR 预处理失败: {oe}")
-            try:
-                eng.convert_pdf(
-                    convert_src, out_path=out_path, sheet="对账单",
-                    password=password or None,
-                    quick_classify=True, diag=True,
-                    onboard_cache=DESC_CACHE_DIR,
-                )
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(422, detail=_diag_payload(out_path, e))
+                    ocr_mode = f"error: {oe}"
+                    print(f"[提示] OCR 预处理失败: {oe}", flush=True)
+            if not glm_direct:
+                try:
+                    eng.convert_pdf(
+                        convert_src, out_path=out_path, sheet="对账单",
+                        password=password or None,
+                        quick_classify=True, diag=True,
+                        onboard_cache=DESC_CACHE_DIR,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(422, detail=_diag_payload(out_path, e))
             with open(out_path, "rb") as f:
                 xlsx = f.read()
     finally:
@@ -198,6 +267,11 @@ def convert(request: Request, file: UploadFile = File(...), password: str = ""):
     resp_headers = {"Content-Disposition": cd}
     if ocr_pages:
         resp_headers["X-OCR-Pages"] = str(ocr_pages)  # 负数=OCR 失败仍由规则路径拒绝
+        if ocr_mode:
+            resp_headers["X-OCR-Mode"] = ocr_mode
+        if ocr_warning:
+            from urllib.parse import quote as _q
+            resp_headers["X-OCR-Warning"] = _q(ocr_warning)
     return Response(
         content=xlsx,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
