@@ -465,6 +465,76 @@ def task_result(tid: str):
                  "attachment; filename*=UTF-8''" + quote(out_name)})
 
 
+
+
+# ---- /admin 转换日志后台(密码保护, 2026-08-30; v7 补丁曾误删, 已恢复) ----
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_COOKIE = "b2x_admin"
+
+
+def _admin_token():
+    return hashlib.sha256(("b2x-admin:" + ADMIN_PASSWORD).encode()).hexdigest()[:32]
+
+
+def _admin_authed(request: Request) -> bool:
+    return bool(ADMIN_PASSWORD) and request.cookies.get(ADMIN_COOKIE) == _admin_token()
+
+
+@app.get("/admin")
+def admin_page(request: Request):
+    if not ADMIN_PASSWORD:
+        return HTMLResponse("<h2>未配置 ADMIN_PASSWORD 环境变量, 后台已禁用</h2>", 403)
+    if not _admin_authed(request):
+        return HTMLResponse(LOGIN_HTML)
+    return HTMLResponse(ADMIN_HTML)
+
+
+@app.post("/admin/login")
+def admin_login(password: str = Form("")):
+    if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
+        resp = Response(status_code=303)
+        resp.headers["Location"] = "/admin"
+        resp.set_cookie(ADMIN_COOKIE, _admin_token(), httponly=True,
+                        samesite="lax", max_age=86400 * 7)
+        return resp
+    return HTMLResponse(LOGIN_HTML)
+
+
+@app.get("/admin/logout")
+def admin_logout():
+    resp = Response(status_code=303)
+    resp.headers["Location"] = "/admin"
+    resp.delete_cookie(ADMIN_COOKIE)
+    return resp
+
+
+@app.get("/admin/api/summary")
+def admin_summary(request: Request, days: int = 7):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    log_store.maybe_purge()
+    return log_store.stats(days=min(max(days, 1), 30))
+
+
+@app.get("/admin/api/logs")
+def admin_logs(request: Request, days: int = 7, status: str = "",
+               limit: int = 300, offset: int = 0):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    return log_store.query(days=min(max(days, 1), 30),
+                           status=status or None,
+                           limit=min(limit, 100000), offset=offset)
+
+
+@app.get("/admin/api/export")
+def admin_export(request: Request, days: int = 30):
+    if not _admin_authed(request):
+        raise HTTPException(401, "未登录")
+    return Response(content=log_store.export_json(days=min(max(days, 1), 30)),
+                    media_type="application/json")
+
+log_store.maybe_purge(force=True)  # 启动即清理过期日志
+
 PRIVACY_NOTE = {
     True: ("隐私说明: 转换在您自己的服务器上完成, 文件转换后即删。未能自动识别的新格式"
            "会把第 1 页渲染图发送给您所配置的外部视觉模型辅助识别, 识别成功后仅保存"
