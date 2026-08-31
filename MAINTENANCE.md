@@ -1,28 +1,32 @@
-# bank2excel-h5 维护手册（2026-08-29 版）
+# bank2excel-h5 维护手册（2026-09-01 版）
 
 > 本手册供新会话接手维护时阅读。读完本文即可了解：项目全貌、双通道部署、更新流程、踩坑记录、待办。
-> 项目状态：**M0-M7 全部完成，双通道线上运行中**。
+> 项目状态：**全功能运行中——规则管道 13+ 格式 / dual OCR 通道 / 异步任务模式 / 日志后台 / MCP 服务**。
 
 ---
 
+## ⚠️ 交接速览（2026-09-01 最终状态，覆盖此前速览）
 
-## ⚠️ 交接速览（2026-08-30 深夜, 长期无人接管前的最终状态）
+**已上线并全量验证的能力栈**（自上而下依次兜底）：
+1. **规则管道**：13+ 家银行/微信格式文字层 PDF 直接转换；未注册新格式经 VLM 学表头→描述符缓存→秒转
+2. **扫描件 OCR dual 通道**：GLM-OCR 主路径（逐页识别+截断自愈+余额链校验）→ 断点页百度表格 V2 定向重做（≤4 页/文档）→ RapidOCR 夹心层保底（无百度 key 时）
+3. **异步任务模式**（移动端治本方案）：`POST /api/tasks` 提交即回 → `GET /api/tasks/{id}` 轮询 → `/result` 下载（结果保留 6h）；原同步 `/api/convert` 保留（MCP/curl 用）
+4. **网页 UI（v8）**：多文件队列（上限 10、串行转换、每行独立密码、单行删除、✕ 重试、IndexedDB 刷新持久化、帮助弹窗、无自动下载弹窗）
+5. **日志后台 `/admin`**：密码 `-TfLutI-9XZS`（VPS compose `ADMIN_PASSWORD`）；SQLite 挂卷存 30 天自动清理；时间/文件/耗时/通道/三路 API token/错误；CSV 导出
+6. **MCP 服务**：`mcp-server/`（独立 venv，mcp<2），已注册本机 `~/.zcode/cli/config.json`，4 工具（convert_pdf/conversion_logs/conversion_stats/service_health），指向 VPS
 
-**全部已上线并验证**：dual 通道 OCR（GLM-OCR 主路径 + 百度定向兜底，民生压测 401/401 满分）、
-网页多文件队列 UI（上限 10/串行转换/每文件密码/删除/刷新持久化 IndexedDB）、
-转换日志后台 `/admin`（ADMIN_PASSWORD 见 VPS compose；记录时间/文件/耗时/通道/三路 API token，
-SQLite 存于挂卷 ./logs，保留 30 天自动清理；支持筛选/搜索/CSV 导出/30s 自动刷新）。
+**凭据与额度**（全在 VPS `/opt/bank2excel-h5/docker-compose.yml`）：
+- 智谱 key：GLM-OCR + VLM 共用；600 万赠送 token 按当前用量够数年
+- 百度 key：表格 V2 体验额度 1000 次约余 900（每次=1 页）；用尽自动降级 GLM 单通道（不中断）
+- `ADMIN_PASSWORD=-TfLutI-9XZS`（后台登录；MCP 端对应 `B2X_ADMIN_PASSWORD`，已配在本机 ~/.zcode/config.json）
 
 **长期无人接管注意事项**：
-1. 三把 key 全在 VPS compose：智谱(GLM-OCR+VLM)、百度(体验额度约余 900 次≈900 页)。
-   百度额度用完后自动只剩 GLM-OCR 主路径（功能不中断，质量上限降为"缺页标记"级）。
-2. 智谱 600 万 token 赠送额度：按当前用量够数年。用尽后 glm-ocr 转按量 0.2 元/百万。
-3. 磁盘占用：logs 挂卷（30 天自动清理）+ descriptors 挂卷（每格式几 KB）+ 容器日志
-   `docker logs`（uvicorn 访问日志会持续增长，长期不接管可定期
-   `sudo truncate -s 0 $(sudo docker inspect --format='{{.LogPath}}' bank2excel)`）。
-4. 重启/重建不丢数据：descriptors 与 logs 都是挂卷。但重建后检查
-   `sudo chown -R 1000:1000 /opt/bank2excel-h5/{logs,descriptors}`（root 挂载目录坑）。
-5. 出问题先看：`sudo docker logs --tail 100 bank2excel` + `/admin` 失败行 + 诊断包。
+1. 磁盘：logs 挂卷（30 天自动清理）+ descriptors 挂卷（每格式几 KB）+ `_task_results/`（6h 自动清理）
+   + 容器日志 `docker logs` 会持续增长（可定期
+   `sudo truncate -s 0 $(sudo docker inspect --format='{{.LogPath}}' bank2excel)`）
+2. 重建容器后检查 `sudo chown -R 1000:1000 /opt/bank2excel-h5/{logs,descriptors}`（root 挂载目录坑）
+3. 移动端兼容：转换走异步任务模式，锁屏/切后台/断网均不丢结果（FirefoxFM 等杀连接浏览器已治本）
+4. 出问题三步：`sudo docker logs --tail 100 bank2excel` → `/admin` 失败行 → 用户侧诊断包
 
 ---
 
@@ -264,3 +268,63 @@ https://jxuzhi-lab.github.io/bank2excel-h5/  # 备用(Pages)
 # 测试样本(本地真实, 不入库)
 C:/Users/Administrator/Documents/银行对账单转化pdf/测试样本/*.pdf
 ```
+
+
+## 十、开发会话记录（2026-08-29 ~ 09-01，本环境从接手到交付全程）
+
+### D1（08-29）环境迁移 + T1 未知格式识别
+- 环境接手：装 Python 3.12.10 + 项目 .venv（系统 3.7.8 跑不了引擎）；仓库镜像从 /tmp 迁至 repo_work/；
+  修正手册过时待办（Dockerfile 改造其实已推送）
+- T1 架构：server.py 从 shim/PYODIDE 阉割版改为**完整引擎**；vision_utils 加 `api` provider
+  （OpenAI 兼容视觉接口，标准库 urllib）；描述符缓存加**校验门禁**（提取成功才落缓存）+
+  **缓存优先**（兜底前先查缓存，同格式零视觉成本）；docker-compose 挂 descriptors 卷
+- 8 场景端到端冒烟（tests/test_vps_fallback.py，假 VLM+合成未知格式 PDF）全绿；部署 VPS
+
+### D2（08-29）VLM 启用 + 描述符回流前置
+- 智谱 key 配上（glm-4v-flash→后改 glm-4.6v）；线上实测 VLM 兜底全链路；
+- 修坑：descriptors 卷 root 属主导致写缓存 Permission denied（chown 1000）
+
+### D3（08-30 上午）扫描件 OCR（RapidOCR 夹心层 v1）
+- ocr_layer.py：无文字层页渲染→RapidOCR→不可见文字按坐标写回（夹心层），**引擎零改动**
+- 北京银行 3 页扫描件：58/58 行，核心三列 100%；server.py 接 OCR 分支 + X-OCR-Pages 头
+- 部署坑：Dockerfile 漏 COPY ocr_layer.py→崩溃循环；deb.debian.org 卡死→换清华源；
+  opencv 需 libgl1；workers 2→1（OCR 模型内存）
+
+### D4（08-30 下午）水印压测暴露夹心层上限
+- 工商(244 水印词)/民生(回归基准)扫描件压测：行数丢/列错位/借方合计虚增 714 万
+- 根因：OCR 坐标抖动使"跨页固定元素"清洗失效；水印进表头带是致命项
+
+### D5（08-30 晚）GLM-OCR 探测→集成→dual 通道
+- glm-ocr 探测：layout_parsing 端点，4704 token/页，markdown 输出无坐标
+- 民生全量：水印零污染（根治），但 2/20 页确定性截断（completion 顶 8289）→缺 20 笔
+- 集成 dual：GLM 主路径+余额链断点检测+百度表格 V2 定向兜底（只送坏页 ≤4）
+- 修复串坑：断点→页映射改内容锚定（累计行数漂移）；页缝去重键禁用 float（20 位流水号超精度）；
+  空余额行不参与判重；百度页空余额链式补全+错误余额链式纠错
+- **终局：401/401 行、借贷合计分毫不差、逐行余额 401/401、余额链完整**
+
+### D6（08-30 深夜）日志后台 + MCP
+- log_store.py（SQLite 30 天保留）+ 三路 API token 计量（glm/vlm/baidu）+ /admin 图形后台
+  （统计卡片/14 天柱状图/筛选搜索/CSV 导出，密码保护）
+- 容器内 sqlite cursor.description 全 None→列名硬编码；logs 卷 chown；重建丢日志库→挂卷
+- mcp-server/（FastMCP 独立 venv，mcp<2）：convert_pdf/logs/stats/health 四工具，
+  注册进 ~/.zcode/cli/config.json；修 mcp2.x 改名与 cookiejar 类名两坑
+
+### D7（08-31 ~ 09-01）网页 UI 六轮迭代 + 密码 bug + 异步任务
+- v3 队列上限 10/串行/每行密码；v4 行删除+IndexedDB 持久化（修连接堆积 bug）；
+  v5 小字收进帮助弹窗；v6 失败重试按钮+网络错误自动重试
+- **E2E 用户模拟抓到致命 bug**：password 参数没加 Form()，被解析为 query——
+  **网页密码功能从未生效**；修复+三场景验证+CLI 术语文案中性化
+- v7 异步任务模式：移动 Firefox 杀后台连接致"第三文件网络错误"（服务端日志证明全部成功）→
+  POST /api/tasks 提交即回+轮询+结果 6h；同步接口保留（MCP 用）
+- v8 移除自动下载弹窗（移动端体验）
+- PaddleOCR-VL 探测（未集成）：单调用整 PDF 64s，内容 396/401，0.009 元/页；
+  结论：不替代主路径，整文档重做场景备用
+- 企微机器人知识文件 docs/知识文件-企业微信机器人-转换服务.md（LLM 调用手册，凭据隔离）
+
+### 本会话最终遗留（均不阻塞）
+- 百度体验额度用尽后 dual 降级为 GLM 单通道；PaddleOCR-VL 作为整文档重做备选未接线
+- 非 PDF 拖入仅静默跳过（可加提示）；垃圾 PDF 会先烧一次 VLM 调用（可加零成本预检）
+- 手头缺真加密样本（本次用 pymupdf 自造验证）；m1_check 样本集未加新格式
+- 手机端 Firefox 实测反馈仍欢迎（异步模式理论上已治本）
+
+---
