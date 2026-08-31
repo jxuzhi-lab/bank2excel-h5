@@ -442,7 +442,7 @@ def task_status(tid: str):
             raise HTTPException(404, "任务不存在或已过期")
         return {k: t.get(k) for k in ("status", "stage", "error", "rows",
                                       "ocr_pages", "ocr_mode", "warning",
-                                      "duration_s", "filename")}
+                                      "duration_s", "filename", "out_name")}
 
 
 @app.get("/api/tasks/{tid}/result")
@@ -778,7 +778,8 @@ async function persist(){
     tx.objectStore('items').clear();
     items.forEach((it,i)=>tx.objectStore('items').put({
       id:i, file:it.file, pwd:it.pwd||'', status:it.status,
-      msg:it.msg||'', blob:it.blob||null, detail:it.detail||null }));
+      msg:it.msg||'', blob:it.blob||null, detail:it.detail||null,
+      tid:it.tid||null, out_name:it.out_name||null }));
   }catch(e){}
 }
 async function restore(){
@@ -791,6 +792,7 @@ async function restore(){
         file:x.file, pwd:x.pwd||'',
         status:x.status==='run'?'pending':x.status,
         msg:x.msg, blob:x.blob||null, detail:x.detail||null,
+        tid:x.tid||null, out_name:x.out_name||null,
       })).map(x=>({...x, blobUrl:x.blob?URL.createObjectURL(x.blob):null}));
       render();
     };
@@ -855,17 +857,29 @@ function addFiles(files){
     if(items.length>=MAXQ){skipped++;continue}
     if(!/\.pdf$/i.test(f.name))continue;
     if(items.some(x=>x.file.name===f.name&&x.file.size===f.size))continue;
-    items.push({file:f,pwd:'',status:'pending',msg:null,blob:null,blobUrl:null,detail:null});
+    items.push({file:f,pwd:'',status:'pending',msg:null,blob:null,blobUrl:null,detail:null,tid:null});
     added++;
   }
   if(skipped)flashHint('队列上限 '+MAXQ+' 个, 已跳过 '+skipped+' 个');
   if(added)persist();
   render();
 }
+function dlName(it){
+  return it.out_name || ((it.file&&it.file.name)?it.file.name.replace(/\.pdf$/i,''):'对账单')+'.xlsx';
+}
 function doDownload(it){
+  // 优先走服务端 /result: Content-Disposition 携带按原 PDF 名生成的文件名。
+  // blob:URL + <a download> 的文件名在 iOS Safari(预览/主屏模式)和微信 X5 会被
+  // 忽略, 批量下载的文件全部存成同一个通用名, 分不清谁是谁 —— 服务端通道无此问题。
+  if(it.tid){
+    const a=document.createElement('a');
+    a.href='/api/tasks/'+it.tid+'/result';
+    a.download=dlName(it);a.click();
+    return;
+  }
   if(!it.blobUrl)it.blobUrl=URL.createObjectURL(it.blob);
   const a=document.createElement('a');a.href=it.blobUrl;
-  a.download=it.file.name.replace(/\.pdf$/i,'')+'.xlsx';a.click();
+  a.download=dlName(it);a.click();
 }
 function doDiag(it){
   const blob=new Blob([JSON.stringify(it.detail.diag,null,1)],{type:'application/json'});
@@ -888,6 +902,7 @@ async function convertOne(it){
       persist();render();return;
     }
     const tid=(await up.json()).task_id;
+    it.tid=tid;
     // 轮询结果(容忍最多 6 次瞬断; 服务端不受影响继续转换)
     while(true){
       await new Promise(r=>setTimeout(r,2500));
@@ -909,6 +924,7 @@ async function convertOne(it){
         it.blob=await rb.blob();
         it.blobUrl=URL.createObjectURL(it.blob);
         it.status='ok';
+        if(s.out_name)it.out_name=s.out_name;
         const warn=s.warning;
         it.msg=fmtSize(it.blob.size)+' · '+s.duration_s+'s'+
           (s.ocr_pages?' · OCR '+s.ocr_pages+' 页':'')+(warn?' · '+warn:'');

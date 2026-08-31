@@ -321,6 +321,21 @@ C:/Users/Administrator/Documents/银行对账单转化pdf/测试样本/*.pdf
   结论：不替代主路径，整文档重做场景备用
 - 企微机器人知识文件 docs/知识文件-企业微信机器人-转换服务.md（LLM 调用手册，凭据隔离）
 
+### D8（09-01）下载链接文件名修复（批量下载分不清谁是谁）
+- 症状：转换成功后下载的 xlsx 文件名不区分文件——iOS Safari（预览/主屏 PWA 模式）和
+  微信 X5 会忽略 `blob:` URL 上的 `<a download>` 文件名属性，批量文件全部存成同一个通用名
+- 修复（server.py 内嵌页 + 任务接口）：
+  1. `convertOne` 记录 `it.tid`，成功后记 `it.out_name`（取自服务端）；`persist/restore`
+     增存 `tid/out_name`，刷新后仍可下载
+  2. `doDownload` 优先走同源 `/api/tasks/{tid}/result`（响应头 `Content-Disposition`
+     携带按原 PDF 名生成的文件名，iOS/X5 下载管理器都认）；无 tid（6h 过期回退）才用 blob+download
+  3. `/api/tasks/{tid}` 状态接口补充返回 `out_name`
+- 验证：本地两文件名 PDF（中文名 UTF-8）E2E——状态接口 out_name 正确、两任务
+  Content-Disposition 各带其名、GUI 点击 spy 显示 href 指向 /result、刷新后 IndexedDB
+  恢复 tid/out_name 依旧、真实点击服务端日志 200；VPS 部署后外网复测同绿
+- 注意：本地 WASM 页（index.html + src/app.js，数据不出设备）下载仍走 blob+download，
+  该模式无服务端通道，iOS 命名问题无解，属已知限制
+
 ### 本会话最终遗留（均不阻塞）
 - 百度体验额度用尽后 dual 降级为 GLM 单通道；PaddleOCR-VL 作为整文档重做备选未接线
 - 非 PDF 拖入仅静默跳过（可加提示）；垃圾 PDF 会先烧一次 VLM 调用（可加零成本预检）
